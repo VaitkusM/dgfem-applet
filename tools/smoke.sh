@@ -14,7 +14,7 @@ if [ -z "$BASE" ]; then
   BASE="http://localhost:8765"
 fi
 fail=0
-dump() { "$CHROME" --headless=new --disable-gpu --virtual-time-budget="$2" --dump-dom "$1" 2>/dev/null; }
+dump() { perl -e 'alarm shift; exec @ARGV' 300 "$CHROME" --headless=new --disable-gpu --virtual-time-budget="$2" --dump-dom "$1" 2>/dev/null; }
 for f in chapters/*.html; do
   out=$(dump "$BASE/$f?selftest=1" 15000 | sed -n 's/.*<pre id="selftest-result">\(.*\)<\/pre>.*/\1/p')
   if echo "$out" | grep -q '"ok":true'; then echo "ok    $f"; else echo "FAIL  $f  $out"; fail=1; fi
