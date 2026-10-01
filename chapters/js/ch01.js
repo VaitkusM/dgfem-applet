@@ -123,15 +123,18 @@ function controlWidget(fig) {
     }
     return f;
   };
-  const record = () => {
-    const d = 1e-4, dM = (mass(st.t + d) - mass(st.t - d)) / (2 * d);
-    st.hist.push({ t: st.t, dM, inflow: -outflow(st.t) });
+  /** both sides of the balance law at time t */
+  const sample = (t) => {
+    const d = 1e-4, dM = (mass(t + d) - mass(t - d)) / (2 * d);
+    return { t, dM, inflow: -outflow(t) };
   };
+  /** precompute both curves over the whole period for the current box */
+  const record = () => { st.hist = []; for (let k = 0; k <= 120; k++) st.hist.push(sample(6 * k / 120)); };
   const anim = new Animator(fig, {
-    step: () => { st.t += 0.02; record(); if (st.t > 6) return false; },
+    step: () => { st.t += 0.02; if (st.t > 6) { st.t = 6; return false; } },
     draw: () => draw(),
   });
-  playControls(L.controls, anim, () => { st.t = 0; st.hist = []; record(); draw(); });
+  playControls(L.controls, anim, () => { st.t = 0; draw(); });
   const out = readout(L.controls);
   let view;
   function draw() {
@@ -154,14 +157,15 @@ function controlWidget(fig) {
     const ym = Math.max(0.05, ...H.map((h) => Math.max(Math.abs(h.dM), Math.abs(h.inflow)))) * 1.15;
     const P = new Plot(s2, { xlim: [0, 6], ylim: [-ym, ym], xlabel: 'time t' });
     P.frame(); P.hline(0);
-    P.line(H.map((h) => h.t), H.map((h) => h.inflow), { color: C[1], width: 5, alpha: 0.45 });
-    P.line(H.map((h) => h.t), H.map((h) => h.dM), { color: C[0], width: 1.6 });
-    P.legend([{ label: 'dM/dt (mass change)', color: C[0] }, { label: '−∮ u a·n ds (net inflow)', color: C[1] }], 'tr');
-    const last = H[H.length - 1];
-    if (last) {
-      out.set(`t = ${st.t.toFixed(2)}\nM(t)      = ${mass(st.t).toFixed(6)}\ndM/dt     = ${last.dM.toFixed(6)}\nnet inflow= ${last.inflow.toFixed(6)}`);
-      selfCheck('control volume balance', Math.abs(last.dM - last.inflow) < 1e-5);
+    if (H.length) {
+      P.line(H.map((h) => h.t), H.map((h) => h.inflow), { color: C[1], width: 5, alpha: 0.45 });
+      P.line(H.map((h) => h.t), H.map((h) => h.dM), { color: C[0], width: 1.6 });
     }
+    P.vline(st.t, { color: T.ink, dash: [], width: 1 });
+    P.legend([{ label: 'dM/dt (mass change)', color: C[0] }, { label: '−∮ u a·n ds (net inflow)', color: C[1] }], 'tr');
+    const now = sample(st.t);
+    out.set(`t = ${st.t.toFixed(2)}\nM(t)      = ${mass(st.t).toFixed(6)}\ndM/dt     = ${now.dM.toFixed(6)}\nnet inflow= ${now.inflow.toFixed(6)}`);
+    selfCheck('control volume balance', Math.abs(now.dM - now.inflow) < 1e-5);
   }
   onPointer(s1.canvas, {
     down: (x, y) => {
@@ -181,9 +185,9 @@ function controlWidget(fig) {
         const sx = Math.max(-o[0], Math.min(1 - o[1], dx)), sy = Math.max(-o[2], Math.min(1 - o[3], dy));
         st.box = [o[0] + sx, o[1] + sx, o[2] + sy, o[3] + sy];
       }
-      st.hist = []; record(); draw();
+      st.hist = []; draw();
     },
-    up: () => { st.drag = null; },
+    up: () => { st.drag = null; record(); draw(); },
   });
   s1.onResize(draw); s2.onResize(draw);
   record(); draw();
