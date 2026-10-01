@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>11. Immersed boundary methods — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch11.js"></script>
+</head>
+<body data-chapter="11">
+<main class="content">
+
+<h1><span class="chapnum">11</span>Immersed boundary methods</h1>
+<p class="subtitle">Solve on a simple background grid that ignores the geometry: cut cells and CutFEM, WEB-splines, the Shifted Boundary Method — and why tiny cut cells are the enemy.</p>
+
+<p class="lead">Every method so far needed a <span class="term" data-g="mesh">mesh</span> that fits the domain: element edges lie on the boundary.
+<em>Immersed</em> (or <em>unfitted</em>, <em>embedded</em>, <em>fictitious-domain</em>) methods drop this requirement. The domain is given implicitly —
+typically by a <span class="term" data-g="levelset">level set</span> — and is simply laid over a Cartesian background grid. The boundary cuts through cells
+wherever it likes. The price is paid in three places: integration over cut cells, boundary conditions on a boundary that is not made of element edges,
+and stability when a cell is cut very unluckily. This chapter builds three complete answers for the Poisson problem
+$-\Delta u = f$ in $\Omega$, $u = g$ on $\Gamma = \partial\Omega$ and verifies all of them.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$\phi$, $\Omega = \{\phi &lt; 0\}$, $\Gamma = \{\phi = 0\}$</td><td>level-set function, the domain it describes and its boundary</td></tr>
+<tr><td>$\mathcal T_h$, $h$</td><td>background mesh of a box $\supset\Omega$ (here: squares split into triangles), mesh size = cell width</td></tr>
+<tr><td>$K$, $\alpha_K = |K\cap\Omega|/|K|$</td><td>a background element and its <b>volume fraction</b> (1 = inside, 0 = outside)</td></tr>
+<tr><td>$\phi_h$, $\Omega_h$, $\Gamma_h$</td><td>piecewise-linear interpolant of $\phi$; the polygonal domain $\{\phi_h &lt; 0\}$ and its boundary</td></tr>
+<tr><td>active mesh</td><td>all elements with $K\cap\Omega_h\ne\emptyset$ (inside + cut); <span class="term" data-g="cutcell">cut cells</span> are those crossed by $\Gamma_h$</td></tr>
+<tr><td>$\mathbf n$</td><td>outward unit normal of $\Omega$ (or of $\Omega_h$); $\partial_n u = \nabla u\cdot\mathbf n$</td></tr>
+<tr><td>$\gamma$, $\gamma_g$, $\mathcal F_G$</td><td>Nitsche penalty, ghost-penalty parameter, the set of ghost-penalty faces</td></tr>
+<tr><td>$[\partial_n v]$</td><td>jump of the normal derivative across a face: $(\nabla v|_{K^-} - \nabla v|_{K^+})\cdot\mathbf n_F$</td></tr>
+<tr><td>$\tilde\Omega_h$, $\tilde\Gamma_h$, $\tilde{\mathbf n}$</td><td>SBM <span class="term" data-g="surrogate">surrogate</span> domain, its boundary and outward normal</td></tr>
+<tr><td>$\mathbf d(\tilde{\mathbf x})$, $M(\tilde{\mathbf x})$</td><td>distance vector from a surrogate-boundary point to its closest point $M(\tilde{\mathbf x}) = \tilde{\mathbf x} + \mathbf d$ on $\Gamma$</td></tr>
+<tr><td>$b_k$, $n$, $k=(k_1,k_2)$</td><td>tensor-product B-spline of degree $n$ with index $k$ on a grid of width $h$</td></tr>
+<tr><td>$w$, $e_{i,j}$, $B_i$</td><td>weight function, extension coefficients, WEB-spline basis functions</td></tr>
+</table>
+</div>
+
+<h2 id="why">Why immersed methods?</h2>
+<p>In industrial simulation, generating a good boundary-fitted mesh is frequently the most time-consuming step, often needing more human time than
+solving the PDE. Reasons:</p>
+<ul>
+<li><b>CAD geometry is dirty.</b> Trimmed NURBS patches with gaps, overlaps and tiny features must be "healed" before a mesher accepts them.</li>
+<li><b>Geometry moves.</b> A beating heart valve, a falling droplet, a rotating propeller, shape optimisation: a fitted mesh must deform and be re-meshed
+again and again; a background grid stays put.</li>
+<li><b>Geometry is often implicit already.</b> Medical CT/MRI data and 3D scans are voxel images; level-set methods for free surfaces and topology
+optimisation describe shapes by a function $\phi$; procedural modelling builds shapes from <b>signed distance functions</b>.</li>
+<li><b>Cartesian grids are fast.</b> Structured data, trivial neighbour lookup, perfect for GPUs (chapter 12), multigrid and octrees.</li>
+</ul>
+<p>Immersed methods turn the meshing problem into a <em>geometric query</em> problem: "which side of $\Gamma$ is this point on?", "where does $\Gamma$ cross
+this edge?", "which point of $\Gamma$ is closest?". Those are exactly the queries computer graphics answers every day.</p>
+
+<h2 id="levelsets">Geometry as a function: level sets and SDFs</h2>
+<p>A <span class="term" data-g="levelset">level-set function</span> $\phi:\R^2\to\R$ describes a domain by its sign:
+$\Omega = \{\mathbf x:\phi(\mathbf x) &lt; 0\}$, $\Gamma = \{\phi = 0\}$. Where $\nabla\phi\ne 0$ on $\Gamma$, the outward normal is
+$\mathbf n = \nabla\phi/|\nabla\phi|$ (the gradient points towards increasing $\phi$, i.e. outwards). The best-behaved level set is the
+<b>signed distance function</b> (SDF): $|\phi(\mathbf x)| = \operatorname{dist}(\mathbf x,\Gamma)$, so that $|\nabla\phi| = 1$ almost everywhere.
+We use two shapes, both centred at $\mathbf c$ and expressed in polar coordinates $(r,\theta)$ around $\mathbf c$:</p>
+<ul>
+<li><b>Circle</b>: $\phi(\mathbf x) = |\mathbf x - \mathbf c| - R$. This is an exact SDF; the closest point on $\Gamma$ is
+$\mathbf c + R\,(\mathbf x - \mathbf c)/|\mathbf x - \mathbf c|$.</li>
+<li><b>Flower</b>: boundary $r = R(\theta) := R\,(1 + a\cos(k(\theta - \rho)))$ with $0\le a&lt;1$, and $\phi = r - R(\theta)$. This $\phi$ has the correct sign
+(negative inside, zero exactly on $\Gamma$), but it is <em>not</em> a distance: along a ray from the centre it measures the radial gap, and near the
+petals the radial gap is larger than the true distance. (It is also not differentiable at $r = 0$, which is harmless because that point is deep inside.)
+Its area is $\tfrac12\int_0^{2\pi} R(\theta)^2\dd\theta = \pi R^2(1 + a^2/2)$.</li>
+</ul>
+<p><b>Closest points.</b> The Shifted Boundary Method needs, for a point $\mathbf p$, the closest point on $\Gamma$. With the parametrisation
+$\mathbf X(t) = \mathbf c + R(t)(\cos t,\sin t)$ we minimise $D(t) = \tfrac12|\mathbf X(t) - \mathbf p|^2$: solve $D'(t) = (\mathbf X - \mathbf p)\cdot\mathbf X' = 0$
+by Newton's method, $t \leftarrow t - D'(t)/D''(t)$ with $D'' = |\mathbf X'|^2 + (\mathbf X - \mathbf p)\cdot\mathbf X''$. Because the petals create several local
+minima, we start Newton from <em>every</em> local minimum of $D$ sampled at $16k$ angles and keep the best result. The tests check that the result lies on
+$\Gamma$ to machine precision, that $\mathbf p - \mathbf X(t)$ is perpendicular to the tangent, and that no point of a fine polyline of $\Gamma$ is closer.</p>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p><b>Sphere tracing</b> (Hart 1996) renders an SDF by marching along a ray with step size $|\phi(\mathbf x)|$: the SDF guarantees that a ball of that radius
+contains no surface. It would fail with our flower $\phi$, which over-estimates the distance near the petals — the same reason the cut quadrature below
+needs a Lipschitz bound to decide that a triangle is certainly not cut. Extracting $\Gamma$ from samples of $\phi$ on a grid is <b>marching squares</b>
+(2D marching cubes, Lorensen &amp; Cline 1987); on triangles it is "marching triangles", which is exactly the linear cut below.</p>
+</div>
+
+<h2 id="cutcells">Background mesh, active mesh and cut cells</h2>
+<p>Lay a uniform triangle mesh $\mathcal T_h$ over a box containing $\Omega$. Evaluate $\phi$ at the vertices. An element whose three vertex values are
+negative is <b>inside</b>, all non-negative is <b>outside</b>, and mixed signs make it a <span class="term" data-g="cutcell">cut cell</span>. Inside and cut
+elements form the <b>active mesh</b>; unknowns live on its vertices — including vertices outside $\Omega$!</p>
+<p><b>Cut quadrature by the linear cut.</b> On each element replace $\phi$ by its linear interpolant $\phi_h$ (exactly what a rasteriser does with a vertex
+attribute). The zero set of a linear function is a straight segment. If $\phi$ changes sign along the edge from vertex $A$ to vertex $B$, the segment
+crosses that edge at</p>
+$$P = A + t\,(B - A),\qquad t = \frac{\phi_A}{\phi_A - \phi_B}\in[0,1].$$
+<p>With one vertex inside, $K\cap\Omega_h$ is a small triangle; with two vertices inside, it is a quadrilateral, which we split into two triangles. Any
+standard triangle quadrature on these <b>sub-triangles</b> integrates polynomials exactly over $K\cap\Omega_h$, and a Gauss rule on the segment integrates
+over $\Gamma_h\cap K$ with the constant normal $\mathbf n_h = \nabla\phi_h/|\nabla\phi_h|$.</p>
+<p><b>Geometric error.</b> $\Gamma_h$ is the polygon through points on (or near) $\Gamma$; a chord of length $h$ deviates from an arc of curvature $\kappa$ by
+about $\kappa h^2/8$. Hence $|\Omega_h| - |\Omega| = O(h^2)$ and $|\Gamma_h| - |\Gamma| = O(h^2)$ — tested for both shapes. Two cures when more is needed:</p>
+<ul>
+<li><b>Recursive refinement:</b> split each possibly cut triangle into 4 children (edge midpoints, true $\phi$ evaluated there), repeat $L$ times, then cut
+linearly. The error drops by about $4^{-L}$ at the cost of more quadrature points; the background mesh and the unknowns do not change. A child is
+declared uncut without further splitting when all its vertex values have the same sign and $\min|\phi| &gt; \text{Lip}(\phi)\cdot\operatorname{diam}$.</li>
+<li><b>Curved cut:</b> find the exact edge crossings (1D root finding on each edge) and integrate the inside part as "curved triangles"
+$\{A + r\,(\mathbf C(\tau) - A)\}$ whose curved side $\mathbf C(\tau)$ follows the parametrised $\Gamma$. This removes the geometric error up to quadrature
+error (the tests reproduce area and perimeter to $10^{-12}$); the WEB-spline solver below needs it to show its higher-order rates.</li>
+</ul>
+
+<figure class="widget" id="w-geometry">
+<figcaption><b>Classifying a background mesh.</b> Green: inside elements; blue: cut elements, with the sub-triangles of $K\cap\Omega_h$ outlined;
+orange: <em>small cuts</em> whose volume fraction $\alpha_K$ is below the threshold. The thick solid segments are $\Gamma_h$, the dashed purple curve is the
+true $\Gamma$. Drag the shape, rotate the flower, and watch the smallest volume fraction in the read-out jump around: it can be arbitrarily close to 0, and
+there is nothing the mesh can do about it. The refinement slider shows how recursive subdivision makes $\Gamma_h$ hug $\Gamma$.</figcaption>
+</figure>
+
+<h2 id="smallcut">The small-cut problem</h2>
+<p>Look at a vertex outside $\Omega$ whose neighbouring elements are all cut, each with a tiny inside part. Its hat function $\varphi_i$ is a perfectly normal
+function on the background mesh, but it is integrated only over $\operatorname{supp}\varphi_i\cap\Omega$. If that region has area $\varepsilon$, the diagonal
+entry $A_{ii} = \int_{\Omega}|\nabla\varphi_i|^2$ is $O(\varepsilon/h^2)$ instead of $O(1)$: the system has a (nearly) zero eigenvalue, and the
+<span class="term" data-g="condition">condition number</span> $\kappa(A)$ is unbounded — not because of $h$, but because of <em>where</em> $\Gamma$ happens to cut.
+This is the <span class="term" data-g="smallcut">small-cut problem</span>. It has two faces:</p>
+<ul>
+<li><b>Elliptic problems</b>: ill-conditioning (iterative solvers stall, direct solvers lose digits), and also <em>loss of stability</em> of Nitsche's method,
+because its penalty argument (chapter 4) needs the full element, not the sliver inside $\Omega$ — see below.</li>
+<li><b>Explicit time stepping</b> for transport (finite volumes, DG): a cut cell with volume $\alpha_K|K|$ but faces of length $\sim h$ obeys a CFL condition
+of roughly $\Delta t \lesssim \alpha_K h/|\mathbf a|$. A single sliver cell with $\alpha_K = 10^{-6}$ would force a million times more time steps.</li>
+</ul>
+<p>Every immersed method is, at its heart, a strategy against small cuts: penalise them (CutFEM), merge them with neighbours (agglomeration, AgFEM),
+extrapolate them away (WEB-splines), redistribute their updates (state redistribution) or avoid them altogether (SBM).</p>
+
+<h2 id="cutfem">CutFEM: Nitsche on $\Gamma$ plus ghost penalty</h2>
+<p><span class="term" data-g="cutfem">CutFEM</span> (Hansbo &amp; Hansbo 2002; Burman &amp; Hansbo 2012; Burman et al. 2015) uses continuous P1 elements on the
+active mesh. Since $\Gamma$ is not made of element edges, the Dirichlet condition cannot be built into the space; it is imposed weakly with
+<span class="term" data-g="nitsche">Nitsche's method</span> exactly as in chapter 4, only now the boundary integrals run over the segments $\Gamma_h\cap K$ inside the
+cut elements. Find $u_h$ in the P1 space of the active mesh such that for all test functions $v$</p>
+$$\begin{aligned}
+&\underbrace{\int_{\Omega_h}\nabla u_h\cdot\nabla v - \int_{\Gamma_h}\partial_n u_h\,v - \int_{\Gamma_h}\partial_n v\,u_h + \frac{\gamma}{h}\int_{\Gamma_h}u_h v}_{\text{Nitsche (ch. 4) on the cut boundary}}
+\;+\; \underbrace{g_h(u_h, v)}_{\text{ghost penalty}}\\
+&\qquad= \int_{\Omega_h} f v - \int_{\Gamma_h}\partial_n v\,g + \frac{\gamma}{h}\int_{\Gamma_h} g\,v .
+\end{aligned}$$
+<p>All volume integrals use the sub-triangles, all boundary integrals the cut segments. $h$ is the background cell width, never the size of the cut
+part. Here $u$ is defined everywhere, so we evaluate $g = u$ on $\Gamma_h$ and in effect solve on $\Omega_h$; the $O(h^2)$ geometric error of $\Omega_h$ is
+of the same order as the P1 $L^2$ error, so it does not spoil the rates.</p>
+
+<p><b>Why Nitsche alone is not enough.</b> Testing with $v = u_h$ gives $\|\nabla v\|^2_{\Omega_h} - 2\int_{\Gamma_h}\partial_n v\,v + \frac\gamma h\|v\|^2_{\Gamma_h}$.
+In chapter 4 the middle term was controlled with the inverse trace inequality $h\|\partial_n v\|^2_{\Gamma\cap K}\le C_I\|\nabla v\|^2_{K}$. On a cut element
+this inequality still holds with the <em>whole</em> element $K$ on the right (for P1, $\nabla v$ is constant and $|\Gamma\cap K|\le\operatorname{diam}K$), but the
+bilinear form only controls $\|\nabla v\|^2_{K\cap\Omega}$, which can be arbitrarily smaller. On a sliver, no fixed $\gamma$ wins, and indeed the tests find
+<em>negative eigenvalues</em> of the CutFEM matrix without stabilisation for an ordinary circle on a $16\times16$ grid with $\gamma = 10$.</p>
+
+<p><b>The ghost penalty</b> (Burman 2010) adds, on the set $\mathcal F_G$ of interior faces of the active mesh that belong to at least one cut element,</p>
+$$g_h(u, v) = \gamma_g\sum_{F\in\mathcal F_G} h\int_F [\partial_n u]\,[\partial_n v]\dd s ,\qquad [\partial_n v] = (\nabla v|_{K^-} - \nabla v|_{K^+})\cdot\mathbf n_F .$$
+<p>For a continuous P1 function the tangential derivative along a face is continuous, so the jump of the gradient across $F$ is purely normal:
+$\nabla v|_{K^-} - \nabla v|_{K^+} = [\partial_n v]\,\mathbf n_F$. Therefore $|\nabla v|_{K^-}|^2 \le 2|\nabla v|_{K^+}|^2 + 2[\partial_n v]^2$, and multiplying
+by $|K^-|\sim h^2$:</p>
+$$\|\nabla v\|^2_{K^-}\;\le\; C\Big(\|\nabla v\|^2_{K^+} + h\int_F[\partial_n v]^2\dd s\Big).$$
+<p>Walking face by face from an inside element to each cut element gives the key estimate
+$\|\nabla v\|^2_{\text{active mesh}}\le C\big(\|\nabla v\|^2_{\Omega_h} + g_h(v,v)\big)$ with $C$ independent of how $\Gamma$ cuts the mesh. Now the inverse trace
+inequality on the whole element is affordable, Nitsche is stable again for a fixed $\gamma$, and the condition number obeys $\kappa(A)\le C h^{-2}$ as for a
+fitted mesh. The penalty is <em>consistent</em>: the exact solution is smooth, so its normal derivative does not jump and $g_h(u,v) = 0$ — the test that
+CutFEM reproduces a linear solution exactly checks this. (For P$p$ elements one penalises jumps of all normal derivatives up to order $p$, with weights $h^{2j-1}$.)</p>
+<div class="box analogy">
+<span class="box-title">Intuition</span>
+<p>The ghost penalty says: "on cut elements, don't let the solution bend more than it would if the neighbouring element's linear function were simply
+continued". It is a smoothness prior on the fictitious part of the active mesh — the only part where the PDE itself gives no information.</p>
+</div>
+
+<figure class="widget" id="w-cutfem">
+<figcaption><b>CutFEM with and without ghost penalty.</b> Left: the CutFEM solution on the active mesh — note that it is also defined on the part of cut
+elements outside $\Gamma$; purple faces carry the ghost penalty. Right: the domain slides diagonally across one cell ($s$ from 0 to 1), and for every position
+the condition number $\kappa(A)$ (Lanczos estimate, absolute values for indefinite matrices) times $h^2$ is computed with and without ghost penalty. With it the
+curve stays flat; without it, spikes appear whenever a cut becomes small. The manufactured solution is $u = \cos(\pi x)\,e^{y}$, $\gamma = 10$.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Switch the ghost penalty off and move the shift slider onto a spike of the orange curve. The error read-out may still look fine — ill-conditioning is
+a property of the linear system, and a direct solver copes until it doesn't. The conjugate-gradient method would need $\sim\sqrt{\kappa}$ iterations — if it
+applies at all: without the ghost penalty the matrix can even be indefinite.</li>
+<li>Turn $\gamma_g$ down to $10^{-3}$: the green curve rises towards the orange one. Turn it up to 1: still flat, but the error grows a little — the penalty
+starts to over-smooth.</li>
+</ul>
+</div>
+
+<h2 id="sbm">The Shifted Boundary Method</h2>
+<p>The <span class="term" data-g="sbm">Shifted Boundary Method</span> (SBM, Main &amp; Scovazzi 2018) takes a radical shortcut: <em>no cut cells at all</em>.</p>
+<ol>
+<li><b>Surrogate domain.</b> $\tilde\Omega_h$ = union of background elements lying inside $\Omega$. We take every triangle whose three vertices satisfy
+$\phi &lt; 0$ (for the convex circle this is exactly "$K\subset\Omega$"; in the concave parts of the flower $\Gamma$ may bulge slightly into such a triangle).
+Other selections exist in the literature; the method only needs $\tilde\Gamma_h$ to be $O(h)$-close to $\Gamma$.</li>
+<li><b>Surrogate boundary</b> $\tilde\Gamma_h = \partial\tilde\Omega_h$, a staircase of mesh edges, with outward normal $\tilde{\mathbf n}$.</li>
+<li><b>Distance vector.</b> For $\tilde{\mathbf x}\in\tilde\Gamma_h$, $\mathbf d(\tilde{\mathbf x}) = M(\tilde{\mathbf x}) - \tilde{\mathbf x}$ points to the closest point
+$M(\tilde{\mathbf x})$ on $\Gamma$ (computed with the closest-point routine above).</li>
+<li><b>Shift the boundary condition by Taylor.</b> We want $u(M(\tilde{\mathbf x})) = g(M(\tilde{\mathbf x}))$, but we only have unknowns on $\tilde\Omega_h$. Expand:
+$$u(\tilde{\mathbf x} + \mathbf d) = u(\tilde{\mathbf x}) + \nabla u(\tilde{\mathbf x})\cdot\mathbf d + O(|\mathbf d|^2),$$
+so on $\tilde\Gamma_h$ we impose the <em>shifted</em> condition $u + \nabla u\cdot\mathbf d = \bar g$, with $\bar g(\tilde{\mathbf x}) := g(M(\tilde{\mathbf x}))$.
+Since $|\mathbf d| = O(h)$, the neglected term is $O(h^2)$ — consistent with second-order P1 accuracy.</li>
+</ol>
+<p>The condition is imposed à la Nitsche on $\tilde\Gamma_h$. The weak form of Main &amp; Scovazzi (Part I, Poisson) reads: find $u_h$ on $\tilde\Omega_h$ such that
+for all $v$</p>
+$$\int_{\tilde\Omega_h}\nabla v\cdot\nabla u_h - \int_{\tilde\Gamma_h} v\,\nabla u_h\cdot\tilde{\mathbf n} - \int_{\tilde\Gamma_h}\nabla v\cdot\tilde{\mathbf n}\,\big(u_h + \nabla u_h\cdot\mathbf d\big)
++ \frac{\alpha}{h}\int_{\tilde\Gamma_h}\big(v + \nabla v\cdot\mathbf d\big)\big(u_h + \nabla u_h\cdot\mathbf d\big)$$
+$$= \int_{\tilde\Omega_h} v f - \int_{\tilde\Gamma_h}\nabla v\cdot\tilde{\mathbf n}\;\bar g + \frac{\alpha}{h}\int_{\tilde\Gamma_h}\big(v + \nabla v\cdot\mathbf d\big)\,\bar g .$$
+<p>Read it term by term: the first two terms are integration by parts on $\tilde\Omega_h$ (consistency); the third is Nitsche's symmetrising term, applied to
+the <em>shifted</em> residual $u_h + \nabla u_h\cdot\mathbf d - \bar g$; the last is the penalty on that residual, tested with the shifted test function. For
+$\mathbf d = 0$ it is exactly the symmetric Nitsche method of chapter 4 on $\tilde\Omega_h$. With $\mathbf d\ne0$ the matrix is <b>not symmetric</b>
+($\nabla u\cdot\mathbf d$ appears in the third term, but $\nabla v\cdot\mathbf d$ does not appear in the second). For P1 elements $\nabla u_h$ is constant per
+element, so each boundary term only involves the one surrogate triangle adjacent to the boundary edge.</p>
+<p>What we gain: only full elements — no cut quadrature, no small cuts, standard assembly; the geometry enters only through $\mathbf d$. What we pay: the
+solution lives on $\tilde\Omega_h$ (errors are measured there; extending it to the strip between $\tilde\Gamma_h$ and $\Gamma$ again uses the Taylor expansion),
+a non-symmetric matrix, and the need for closest points. For comparison we also implement the <b>unshifted</b> variant: $\mathbf d = 0$ in the operator but the
+data still transferred, $\bar g(\tilde{\mathbf x}) = g(M(\tilde{\mathbf x}))$ — i.e. pretending the staircase is the true boundary. That commits an $O(h)$
+error in the boundary condition and the $L^2$ rate drops to 1, while the shifted SBM is second order (tested for both shapes). The shifted SBM is exact for
+linear solutions, because then $u + \nabla u\cdot\mathbf d = u(\tilde{\mathbf x} + \mathbf d)$ holds exactly.</p>
+
+<figure class="widget" id="w-sbm">
+<figcaption><b>The Shifted Boundary Method.</b> Left: background mesh, surrogate domain $\tilde\Omega_h$ (green), surrogate boundary $\tilde\Gamma_h$ (blue staircase)
+and the distance vectors $\mathbf d$ from the midpoint of every surrogate edge to the closest point on $\Gamma$ (orange arrows). Right: the error
+$|u - u_h|$ on $\tilde\Omega_h$. Switch the Taylor shift off: the error near the boundary grows by an order of magnitude and stops improving like $h^2$
+when you refine.</figcaption>
+</figure>
+
+<h2 id="webspline">WEB-splines: weighted extended B-splines</h2>
+<p><span class="term" data-g="webspline">WEB-splines</span> (Höllig, Reif &amp; Wipper 2001) attack both problems — boundary conditions and small cuts — with
+two ideas, built on uniform tensor-product B-splines.</p>
+<p><b>B-splines.</b> The cardinal B-spline $N_n$ of degree $n$ is the box function $\chi_{[0,1)}$ convolved with itself $n$ times: a piecewise polynomial of
+degree $n$, $C^{n-1}$ smooth, non-negative, supported on $[0, n+1]$, and its integer shifts sum to one. (The cubic one is the "B-spline filter" of image
+resampling and the basis of uniform cubic spline curves.) On a grid of width $h$ with index coordinates $\xi = (x - x_0)/h$, $\eta = (y-y_0)/h$,
+$$b_k(x,y) = N_n(\xi - k_1)\,N_n(\eta - k_2),$$
+supported on the $(n+1)\times(n+1)$ grid cells with lower-left indices $k_1\ldots k_1+n$, $k_2\ldots k_2+n$. Unlike P1 hats, spline spaces are smooth and
+need far fewer unknowns per accuracy, but nothing about them fits a curved boundary.</p>
+
+<p><b>Idea 1 — weight functions make the Dirichlet condition strong.</b> Choose a smooth <b>weight function</b> $w$ with $w &gt; 0$ in $\Omega$, $w = 0$ on $\Gamma$,
+and $|\nabla w|\ne 0$ on $\Gamma$ (linear growth, like a distance). Every function $w\,b_k$ vanishes on $\Gamma$ exactly, no matter how the grid cuts it — the
+homogeneous Dirichlet condition is built into the space, as in chapter 3, without a fitted mesh. We use</p>
+<ul>
+<li>circle: $w = (R^2 - |\mathbf x - \mathbf c|^2)/(2R)$, a polynomial with $w\approx R - r$ near $\Gamma$;</li>
+<li>flower: Höllig's regularised distance $w = \tfrac{\delta}{3}\big(1 - (1 - t)^3\big)$ with $t = -\phi/\delta$ for $0\le t\le 1$ and $w = \delta/3$ deeper inside.
+It is $C^2$, $w\approx-\phi$ near $\Gamma$, and with $\delta = 0.4\min_\theta R(\theta)$ the non-smooth centre of $\phi$ lies where $w$ is constant.</li>
+</ul>
+<p>(R-functions of Rvachev give smooth weights for domains built by Boolean operations — the CSG trees of solid modelling.)</p>
+
+<p><b>Idea 2 — extension makes the basis stable.</b> Classify the grid cells (inside, cut, outside) and the B-splines:</p>
+<ul>
+<li>$b_k$ is <b>relevant</b> if its support meets $\Omega$;</li>
+<li><b>inner</b> if its support contains at least one grid cell lying entirely inside $\Omega$;</li>
+<li><b>outer</b> if it is relevant but not inner — its support overlaps $\Omega$ only near $\Gamma$, possibly in a tiny sliver where $w$ is also tiny.</li>
+</ul>
+<p>Outer B-splines are exactly the small-cut troublemakers. Instead of dropping them (which would destroy the approximation order near $\Gamma$),
+WEB-splines <em>extrapolate</em> their coefficients from inner ones. The reason this works is <b>Marsden's identity</b>: for uniform knots,
+$(\xi - \tau)^n = \sum_k \psi_k(\tau)\,N_n(\xi - k)$ with $\psi_k(\tau) = \prod_{\mu=1}^{n}(k + \mu - \tau)$, and more generally the B-spline coefficients of
+any polynomial of degree $\le n$ are <em>polynomials of degree $\le n$ in the index $k$</em>. So the coefficient of an outer B-spline can be computed from inner
+coefficients by polynomial extrapolation in index space without losing polynomial reproduction.</p>
+<p>For every outer index $j$ pick the $(n+1)\times(n+1)$ array of inner indices $I(j) = \ell + \{0,\ldots,n\}^2$ closest to $j$ (we take the array whose centre
+$\ell + (n/2, n/2)$ is nearest to $j$ in the Euclidean distance of index space). The extension coefficients are the values at $j$ of the tensor-product
+Lagrange polynomials on these nodes:</p>
+$$e_{i,j} = \prod_{\nu=1}^{2}\;\prod_{\substack{\mu=0\\ \mu\ne i_\nu - \ell_\nu}}^{n}\frac{j_\nu - \ell_\nu - \mu}{i_\nu - \ell_\nu - \mu},\qquad i\in I(j),$$
+<p>so that $\sum_{i\in I(j)} e_{i,j}\,q(i) = q(j)$ for every polynomial $q$ of coordinate degree $\le n$. The <b>WEB-spline</b> basis consists of one function per inner
+index $i$,</p>
+$$B_i = \frac{w}{w(\mathbf x_i)}\Big(b_i + \sum_{j\in J(i)} e_{i,j}\, b_j\Big),\qquad J(i) = \{\text{outer } j : i\in I(j)\},$$
+<p>where $\mathbf x_i$ is the centre of an inside grid cell in the support of $b_i$ (we take the one with largest $w$; the normalisation only affects conditioning).
+The extended B-splines $b_i + \sum_j e_{i,j}b_j$ reproduce every polynomial of coordinate degree $\le n$ on $\Omega$ (tested with Marsden's coefficients), so the
+WEB space approximates like the full spline space — Höllig, Reif &amp; Wipper prove optimal order and a condition number $O(h^{-2})$ independent of how $\Gamma$
+cuts the grid.</p>
+<p><b>Non-homogeneous data.</b> Take any smooth extension $\tilde g$ of $g$ into $\Omega$ ($\tilde g = g$ on $\Gamma$) and seek
+$u_h = \tilde g + \sum_i c_i B_i$; since every $B_i$ vanishes on $\Gamma$, $u_h = g$ on $\Gamma$ <em>exactly</em> (tested). The Galerkin equations are, for every inner $i$,</p>
+$$\sum_k c_k\int_\Omega\nabla B_k\cdot\nabla B_i = \int_\Omega f\,B_i - \int_\Omega\nabla\tilde g\cdot\nabla B_i .$$
+<p>Caveat: if $\tilde g$ happened to be the exact solution, the correction would vanish and nothing would be tested. We therefore use $\tilde g = (1 - w)\,G$,
+where $G = \cos(\pi x)e^y$ is the formula of the boundary data (here it coincides with $u$); then the unknown part $(u - \tilde g)/w = G$ is non-trivial. Integrals are computed cell by cell
+with Gauss rules on inside cells and the curved cut quadrature on cut cells.</p>
+
+<figure class="widget" id="w-web">
+<figcaption><b>WEB-splines.</b> Left: grid cells inside (green) and cut (orange); every relevant B-spline is a dot at the centre of its support — filled for
+inner, ring for outer. Click an outer dot to see its array $I(j)$ and the extension coefficients $e_{i,j}$ (they sum to 1 because constants are reproduced);
+click an inner dot to see the outer B-splines $J(i)$ it absorbs, and choose "selected WEB-spline" on the right to see $B_i$ itself. Switching the extension
+off keeps every relevant B-spline as an unknown: the Jacobi-scaled condition number in the read-out grows (dramatically for $n\ge2$ when a cut is tiny).</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Degree 3, flower: click outer dots — their extension stencils are $4\times4$ arrays with coefficients far outside $[0,1]$ —
+extrapolation, not interpolation.</li>
+<li>Compare the error read-out for $n = 1, 2, 3$ at the same grid: the gain from smoothness and degree is large, and the number of unknowns stays small.</li>
+</ul>
+</div>
+
+<h2 id="compare">Comparing the three methods</h2>
+<figure class="widget" id="w-conv">
+<figcaption><b>Convergence on a fixed domain</b> (circle $R = 0.33$ or flower $R = 0.3$, $a = 0.2$, $k = 5$; manufactured solution $u = \cos(\pi x)e^{y}$).
+Errors are measured where each method lives: CutFEM on $\Omega_h$, SBM on $\tilde\Omega_h$, WEB-splines on $\Omega$. Expected (and tested) rates: CutFEM P1 and
+shifted SBM P1 have $L^2$ rate 2 and $H^1$ rate 1; unshifted SBM has $L^2$ rate 1; WEB-splines of degree $n$ have $L^2$ rate $n+1$ and $H^1$ rate $n$. On the
+flower the WEB-spline rates are erratic on coarse grids (pre-asymptotic behaviour) and settle down as $h$ shrinks. The computation runs
+in the background after the page loads.</figcaption>
+</figure>
+
+<table class="data">
+<tr><th>method</th><th>unknowns on</th><th>Dirichlet BC</th><th>cut quadrature</th><th>small-cut cure</th><th>matrix</th></tr>
+<tr><td>CutFEM (P1)</td><td>active mesh</td><td>weak (Nitsche on $\Gamma_h$)</td><td>yes</td><td>ghost penalty</td><td>SPD</td></tr>
+<tr><td>Shifted Boundary Method</td><td>surrogate mesh</td><td>weak, shifted by Taylor</td><td>no</td><td>no cut cells</td><td>non-symmetric</td></tr>
+<tr><td>WEB-splines</td><td>inner B-splines</td><td>strong (weight function)</td><td>yes</td><td>extension</td><td>SPD</td></tr>
+</table>
+
+<h2 id="variants">Variants and relatives</h2>
+<ul>
+<li><b>Finite cell method</b> (FCM; Parvizian, Düster &amp; Rank 2007): high-order ($p$-version) elements on the background mesh; the fictitious part is
+kept but given a tiny material coefficient (e.g. $10^{-8}$ times the physical one) instead of being cut away, and cut cells are integrated by adaptive
+(quadtree) subdivision — the recursive refinement above. Dirichlet conditions are typically imposed weakly (penalty or Nitsche).</li>
+<li><b>Aggregated FEM</b> (AgFEM; Badia, Verdugo &amp; Martín 2018): each badly cut cell is aggregated with a nearby interior "root" cell, and the degrees of
+freedom that live only on badly cut cells are eliminated by extending the polynomial of the root cell — a discrete extension operator very much in the spirit
+of WEB-spline extension, yielding condition numbers independent of the cut.</li>
+<li><b>Cell agglomeration in cut DG</b>: discontinuous Galerkin (chapters 6 and 8) allows arbitrary element shapes, so a small cut cell can simply be merged with a
+neighbour into one bigger element with a single polynomial (Johansson &amp; Larson 2013 for elliptic problems; Müller, Krämer-Eis, Kummer &amp; Oberlack 2017 for
+compressible flow with immersed boundaries).</li>
+<li><b>Cut-cell finite volumes</b> fight the time-step restriction: the <b>h-box method</b> (Berger, Helzel &amp; LeVeque 2003) computes fluxes from boxes of
+regular length $h$ that reach into neighbouring cells, and <b>state redistribution</b> (Berger &amp; Giuliani 2021) performs the unstable update with the
+regular time step and then redistributes the solution conservatively over overlapping neighbourhoods of small cells.</li>
+<li><b>SBM extensions</b>: Part II of Main &amp; Scovazzi covers advection–diffusion and Navier–Stokes; Atallah, Canuto &amp; Scovazzi analysed the method and extended
+it to Neumann conditions (the "second-generation" SBM) and to higher order (higher-order Taylor expansions, which need higher derivatives of $u_h$).</li>
+<li><b>The original "immersed boundary method"</b> (Peskin 1972, 2002) is a different animal, designed for fluid–structure interaction (blood flow through
+heart valves). The fluid lives on a Cartesian grid; the elastic structure is a set of Lagrangian marker points. The structure's elastic forces are
+<em>spread</em> to the grid with a regularised (smoothed) delta function a few cells wide, and the markers move with the fluid velocity interpolated back with
+the same kernel. The boundary is thus smeared over a few cells, with typically only first-order accuracy near the interface. Immersed <em>finite element</em>
+methods like CutFEM and the SBM are instead "sharp-interface" methods: the boundary enters the weak form exactly (or through a controlled Taylor shift).
+The name is shared; the mathematics is not.</li>
+</ul>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Ignoring small cuts.</b> A cut-cell code without ghost penalty, aggregation or extension works on most geometries and then fails on one unlucky
+position — the widget above shows how sharp those spikes are. Never judge a cut-cell method on a single configuration.</li>
+<li><b>Using $|K\cap\Omega|$ as "h"</b> in the Nitsche penalty sounds natural but makes the penalty explode on slivers and the system even worse conditioned;
+use the background element size.</li>
+<li><b>Quadrature that is too crude.</b> The geometric error of the integration domain caps the convergence rate: the linear cut gives at most second order —
+enough for P1, not for the higher-degree WEB-splines, which here need the curved cut.</li>
+<li><b>Level sets that are not distances.</b> Tests like "$|\phi| &gt; \operatorname{diam}K$ ⇒ not cut" or sphere tracing assume an SDF (or a known Lipschitz bound).
+The flower $\phi = r - R(\theta)$ is not one.</li>
+<li><b>Forgetting the shift.</b> Imposing the boundary data on the staircase $\tilde\Gamma_h$ as if it were $\Gamma$ costs one order of accuracy.</li>
+</ul>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>Immersed methods replace boundary-fitted meshing by geometric queries on a level set $\phi$: sign, edge crossings, closest points.</li>
+<li>Cut quadrature: linear interpolation of $\phi$ gives straight cut segments and sub-triangles with $O(h^2)$ geometric error; refinement or curved cuts reduce it.</li>
+<li>The small-cut problem — arbitrarily small volume fractions $\alpha_K$ — destroys conditioning (and explicit time steps) unless the method is stabilised.</li>
+<li>CutFEM = Nitsche on $\Gamma_h$ + ghost penalty $\gamma_g\sum_F h\int_F[\partial_n u][\partial_n v]$: optimal P1 rates and $\kappa(A) = O(h^{-2})$ for every cut.</li>
+<li>SBM: no cut cells; impose $u + \nabla u\cdot\mathbf d = g(\tilde{\mathbf x} + \mathbf d)$ on the surrogate boundary. The shift restores second order.</li>
+<li>WEB-splines: weight function $w$ for strong Dirichlet conditions, extension of outer B-splines for stability; rate $n+1$ in $L^2$ for degree $n$.</li>
+</ul>
+
+<h2 id="references">References</h2>
+<ul>
+<li>C. S. Peskin, Flow patterns around heart valves: a numerical method, <em>J. Comput. Phys.</em> 10 (1972); and The immersed boundary method,
+<em>Acta Numerica</em> 11 (2002).</li>
+<li>R. Mittal, G. Iaccarino, Immersed boundary methods, <em>Annu. Rev. Fluid Mech.</em> 37 (2005).</li>
+<li>S. Osher, J. A. Sethian, Fronts propagating with curvature-dependent speed: algorithms based on Hamilton–Jacobi formulations, <em>J. Comput. Phys.</em> 79 (1988).</li>
+<li>J. C. Hart, Sphere tracing: a geometric method for the antialiased ray tracing of implicit surfaces, <em>The Visual Computer</em> 12 (1996).</li>
+<li>W. E. Lorensen, H. E. Cline, Marching cubes: a high resolution 3D surface construction algorithm, <em>SIGGRAPH</em> (1987).</li>
+<li>J. Nitsche, Über ein Variationsprinzip zur Lösung von Dirichlet-Problemen bei Verwendung von Teilräumen, die keinen Randbedingungen unterworfen sind,
+<em>Abh. Math. Sem. Univ. Hamburg</em> 36 (1971).</li>
+<li>A. Hansbo, P. Hansbo, An unfitted finite element method, based on Nitsche's method, for elliptic interface problems, <em>Comput. Methods Appl. Mech. Engrg.</em> 191 (2002).</li>
+<li>E. Burman, Ghost penalty, <em>C. R. Math. Acad. Sci. Paris</em> 348 (2010).</li>
+<li>E. Burman, P. Hansbo, Fictitious domain finite element methods using cut elements: II. A stabilized Nitsche method, <em>Appl. Numer. Math.</em> 62 (2012).</li>
+<li>E. Burman, S. Claus, P. Hansbo, M. G. Larson, A. Massing, CutFEM: discretizing geometry and partial differential equations, <em>Int. J. Numer. Meth. Engng.</em> 104 (2015).</li>
+<li>A. Main, G. Scovazzi, The shifted boundary method for embedded domain computations. Part I: Poisson and Stokes problems; Part II: Linear advection–diffusion
+and incompressible Navier–Stokes equations, <em>J. Comput. Phys.</em> 372 (2018).</li>
+<li>N. M. Atallah, C. Canuto, G. Scovazzi, The second-generation Shifted Boundary Method and its numerical analysis, <em>Comput. Methods Appl. Mech. Engrg.</em> (2020);
+The high-order Shifted Boundary Method and its analysis, <em>Comput. Methods Appl. Mech. Engrg.</em> (2022).</li>
+<li>K. Höllig, U. Reif, J. Wipper, Weighted extended B-spline approximation of Dirichlet problems, <em>SIAM J. Numer. Anal.</em> 39 (2001).</li>
+<li>K. Höllig, <em>Finite Element Methods with B-Splines</em>, SIAM (2003).</li>
+<li>M. Marsden, An identity for spline functions with applications to variation-diminishing spline approximation, <em>J. Approx. Theory</em> 3 (1970).</li>
+<li>J. Parvizian, A. Düster, E. Rank, Finite cell method: h- and p-extension for embedded domain problems in solid mechanics, <em>Comput. Mech.</em> 41 (2007).</li>
+<li>S. Badia, F. Verdugo, A. F. Martín, The aggregated unfitted finite element method for elliptic problems, <em>Comput. Methods Appl. Mech. Engrg.</em> 336 (2018).</li>
+<li>A. Johansson, M. G. Larson, A high order discontinuous Galerkin Nitsche method for elliptic problems with fictitious boundary, <em>Numer. Math.</em> 123 (2013).</li>
+<li>B. Müller, S. Krämer-Eis, F. Kummer, M. Oberlack, A high-order discontinuous Galerkin method for compressible flows with immersed boundaries,
+<em>Int. J. Numer. Meth. Engng.</em> 110 (2017).</li>
+<li>M. J. Berger, C. Helzel, R. J. LeVeque, H-box methods for the approximation of hyperbolic conservation laws on irregular grids, <em>SIAM J. Numer. Anal.</em> 41 (2003).</li>
+<li>M. Berger, A. Giuliani, A state redistribution algorithm for finite volume schemes on cut cell meshes, <em>J. Comput. Phys.</em> 428 (2021).</li>
+</ul>
+
+</main>
+</body>
+</html>
