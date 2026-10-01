@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Test suite — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<style>
+  main { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; font-family: var(--font-ui); }
+  td.name { text-align: left; } td.ok { color: var(--accent-3); font-weight: 700; } td.fail { color: var(--accent-2); font-weight: 700; }
+  td.msg { font: 12px var(--font-mono); white-space: pre-wrap; text-align: left; color: var(--accent-2); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Test suite</h1>
+  <p>Runs every test file listed in <code>tests/manifest.js</code> in this browser (including GPU tests when WebGPU is available).
+    Filter with <code>?grep=word</code>. The same tests run headless with <code>deno task test</code>.</p>
+  <p id="status">Running…</p>
+  <table class="data" id="results"><thead><tr><th>test</th><th>result</th><th>ms</th><th>message</th></tr></thead><tbody></tbody></table>
+  <pre id="summary" hidden></pre>
+</main>
+<script type="module" src="runner.js"></script>
+</body>
+</html>

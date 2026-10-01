@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fluxes, DG &amp; friends — an interactive course</title>
+<meta name="description" content="Interactive, visual introduction to fluxes, finite volumes, discontinuous Galerkin, flux reconstruction, boundary conditions, domain decomposition, hybridization, immersed boundary methods and GPU parallelisation.">
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="lib/ui/landing.js"></script>
+</head>
+<body data-root="">
+<main class="content">
+  <div class="hero">
+    <h1>Fluxes, DG &amp; friends</h1>
+    <p class="lead">An interactive, visual course on how computers solve the partial differential equations of
+      heat, flow and transport — from the physical meaning of a <em>flux</em> to discontinuous Galerkin
+      methods, immersed boundaries and GPU kernels. Every figure is a live solver running in your browser.</p>
+  </div>
+
+  <div class="box analogy">
+    <span class="box-title">Who this is for</span>
+    <p>Students with a computer science background — especially computational geometry and graphics. We assume
+      calculus (derivatives, integrals) and linear algebra (matrices, solving linear systems). Everything else —
+      divergence, weak forms, function spaces, numerical fluxes — is introduced from scratch, with graphics analogies
+      where they help. Hover over <span class="term" data-g="flux">dotted terms</span> for a definition.</p>
+  </div>
+
+  <h2 id="chapters">Chapters</h2>
+  <div class="cards" id="cards"></div>
+
+  <h2 id="how">How to use this site</h2>
+  <ul>
+    <li><b>Read in order</b> the first time: chapters build on each other. The two running examples are the
+      <em>Poisson equation</em> $-\Delta u = f$ (steady heat conduction: an <em>elliptic</em> problem) and
+      <em>conservation laws</em> $\partial_t u + \nabla\cdot \mathbf{F}(u) = 0$ (transport and flow — CFD).</li>
+    <li><b>Play with every widget.</b> The green “Try this” boxes suggest experiments; the orange
+      “What goes wrong” boxes show the classic pitfalls on purpose.</li>
+    <li><b>Everything is verified.</b> The solvers are tested against exact solutions; see the
+      <a href="chapters/a-verification.html">verification appendix</a>, which runs the test suite live.</li>
+    <li><b>Read the code.</b> The source is plain, commented JavaScript with no build step:
+      <a href="https://github.com/VaitkusM/dgfem-applet">github.com/VaitkusM/dgfem-applet</a>.</li>
+  </ul>
+  <footer class="site">Code MIT · text and figures CC BY 4.0 · <a href="tests/test.html">run the test suite</a></footer>
+</main>
+</body>
+</html>
