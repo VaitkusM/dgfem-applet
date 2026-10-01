@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>7. Flux reconstruction — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch07.js"></script>
+<style>
+  .widget-body > .controls.wide { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .6rem 1.4rem; align-items: start; }
+  .controls.wide .readout { grid-column: span 2; }
+</style>
+</head>
+<body data-chapter="07">
+<main class="content">
+
+<h1><span class="chapnum">7</span>Flux reconstruction</h1>
+<p class="subtitle">Huynh's differential view: build a continuous flux polynomial per element, differentiate it at the solution points — and recover DG without a single integral.</p>
+
+<p class="lead">Chapter 6 derived DG from integrals: weak forms, mass matrices, quadrature. In 2007 H. T. Huynh showed that the same scheme (and a whole
+family of relatives) can be written as a pure <em>collocation</em> method: evaluate the flux at a few points, correct it with a fixed polynomial so that it
+becomes continuous across elements, and differentiate. This <span class="term" data-g="fr">flux reconstruction (FR)</span> formulation is simple to code,
+cheap to run, and has a tunable parameter that trades accuracy for larger time steps. It is the basis of production solvers such as PyFR.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$\xi_0,\dots,\xi_p$</td><td><em>solution points</em> in the reference element $[-1,1]$ (Gauss or GLL); $u_{k,i} = u_h$ at $\xi_i$ in element $K_k$</td></tr>
+<tr><td>$\ell_i(\xi)$, $D_{ij} = \ell_j'(\xi_i)$</td><td>Lagrange basis at the solution points and differentiation matrix (chapter 6)</td></tr>
+<tr><td>$F^D_k(\xi)$</td><td>discontinuous flux: degree-$p$ interpolant of the values $f(u_{k,i})$, element by element</td></tr>
+<tr><td>$\hat F_{k\pm\frac12}$</td><td>common (interface) flux at the faces of $K_k$, $= \hat F(u^-, u^+)$ as in DG</td></tr>
+<tr><td>$g_L(\xi)$, $g_R(\xi)$</td><td>left / right <span class="term" data-g="correction">correction functions</span>, degree $p+1$, $g_R(\xi) = g_L(-\xi)$</td></tr>
+<tr><td>$F_k(\xi)$</td><td>corrected (reconstructed) flux, degree $p+1$, continuous across faces</td></tr>
+<tr><td>$P_k$, $R_{R,k}$</td><td>Legendre polynomial; right Radau polynomial $R_{R,k} = \frac{(-1)^k}{2}(P_k - P_{k-1})$</td></tr>
+<tr><td>$c$, $\eta_p$, $a_p$</td><td>VCJH parameter; $\eta_p = \frac{c\,(2p+1)\,(a_p\,p!)^2}{2}$; $a_p = \frac{(2p)!}{2^p (p!)^2}$ is the leading coefficient of $P_p$</td></tr>
+</table>
+</div>
+
+<h2 id="differential">The differential view</h2>
+<p>We still solve $u_t + f(u)_x = 0$ with a polynomial of degree $p$ per element, stored by its values at $p+1$ solution points. Instead of a weak form,
+FR asks that the PDE hold <em>exactly at the solution points</em>, with $f(u)$ replaced by a cleverly built flux polynomial. In reference coordinates
+($\partial_x = \frac2h\partial_\xi$) the recipe for one evaluation of $\partial_t u$ is:</p>
+<ol>
+<li><b>Discontinuous flux.</b> In every element, compute $f(u_{k,i})$ at the solution points and let $F^D_k(\xi) = \sum_i f(u_{k,i})\,\ell_i(\xi)$ be its interpolant. Neighbouring
+$F^D_k$ do not match at the faces: the flux, like $u_h$, jumps.</li>
+<li><b>Common interface fluxes.</b> Extrapolate $u_h$ to the faces and evaluate a numerical flux $\hat F(u^-, u^+)$ — exactly as in FV and DG (chapters 5, 6).</li>
+<li><b>Correct.</b> Add a multiple of the left correction function to fix the left end and a multiple of the right one to fix the right end:
+$$F_k(\xi) = F^D_k(\xi) + \big(\hat F_{k-\frac12} - F^D_k(-1)\big)\, g_L(\xi) + \big(\hat F_{k+\frac12} - F^D_k(1)\big)\, g_R(\xi).$$
+Because $g_L(-1) = 1$, $g_L(1) = 0$ and $g_R(-1) = 0$, $g_R(1) = 1$, we get $F_k(-1) = \hat F_{k-\frac12}$ and $F_k(1) = \hat F_{k+\frac12}$: neighbouring elements now
+agree on the face value, and the global flux is <b>continuous</b>.</li>
+<li><b>Differentiate at the solution points:</b>
+$$\begin{aligned}\frac{\mathrm d u_{k,i}}{\mathrm dt} &= -\frac2h\, F_k'(\xi_i)\\ &= -\frac2h\Big[(D\,\mathbf f_k)_i + \big(\hat F_{k-\frac12} - F^D_k(-1)\big)\,g_L'(\xi_i) + \big(\hat F_{k+\frac12} - F^D_k(1)\big)\,g_R'(\xi_i)\Big],\end{aligned}$$
+where $\mathbf f_k = \big(f(u_{k,0}),\dots,f(u_{k,p})\big)$, so that $(D\,\mathbf f_k)_i = (F^D_k)'(\xi_i)$.</li>
+</ol>
+<p>No integrals, no mass matrix: only point evaluations, a differentiation matrix and two precomputed vectors $g_L'(\xi_i)$, $g_R'(\xi_i)$. Since $F_k$ has degree
+$p+1$, its derivative has degree $p$, the same as $u_h$; the two degree-$p$ polynomials $\partial_t u_h$ and $-\frac2h F_k'$ agree at $p+1$ points, so they are equal
+everywhere on the element. Integrating over the element therefore gives
+$\frac{\mathrm d}{\mathrm dt}\int_{K_k} u_h = -\big(F_k(1) - F_k(-1)\big) = -\big(\hat F_{k+\frac12} - \hat F_{k-\frac12}\big)$: <b>FR is conservative</b>, just like DG.</p>
+
+<figure class="widget" id="w-recon">
+<figcaption><b>Reconstructing a continuous flux.</b> Top: the discontinuous flux $F^D$ of every element (thin), the common fluxes $\hat F$ at the faces (dots)
+and the corrected flux $F$ (thick), which passes through the dots and is continuous. Bottom: the selected element in detail — $F^D$, the two correction terms
+$(\hat F_{k-\frac12} - F^D(-1))\,g_L$ and $(\hat F_{k+\frac12} - F^D(1))\,g_R$, and their sum $F$; the vertical bars show the flux mismatches that the corrections remove.
+The readout lists $-\frac2h F'(\xi_i)$, the update at the solution points. For advection ($a&gt;0$) with the upwind flux the right mismatch is always zero:
+the upwind flux at the right face is this element's own value $F^D(1)$.</figcaption>
+</figure>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Think of $F^D$ as separately fitted curve pieces that do not meet at the joints. Correction functions are like blending ramps that pull each piece's endpoint
+to an agreed common value — the left ramp is $1$ at the left joint and $0$ at the right one — similar to how a $C^0$ spline is stitched together from independent
+segments. The shape of the ramp in between is the design freedom of FR.</p>
+</div>
+
+<h2 id="corrections">Correction functions</h2>
+<p>A left correction function is any polynomial $g_L$ of degree $p+1$ with $g_L(-1) = 1$ and $g_L(1) = 0$; the right one is its mirror image
+$g_R(\xi) = g_L(-\xi)$. That leaves $p$ degrees of freedom, and their choice determines the scheme. All classical choices are built from the
+<b>right Radau polynomial</b></p>
+$$R_{R,k}(\xi) = \frac{(-1)^k}{2}\big(P_k(\xi) - P_{k-1}(\xi)\big),\qquad R_{R,k}(-1) = 1,\quad R_{R,k}(1) = 0,$$
+<p>(using $P_k(1) = 1$ and $P_k(-1) = (-1)^k$). Huynh's three most important choices are</p>
+<div class="box def">
+$$g_{DG} = R_{R,p+1},\qquad
+g_{2} = \frac{p\,R_{R,p+1} + (p+1)\,R_{R,p}}{2p+1},$$
+$$g_{Ga} = \frac{(p+1)\,R_{R,p+1} + p\,R_{R,p}}{2p+1} = \frac{(-1)^p}{2}(1-\xi)\,P_p(\xi).$$
+</div>
+<ul>
+<li>$g_{DG}$ reproduces DG (next section).</li>
+<li>$g_2$ allows a markedly larger time step than $g_{DG}$, and with GLL solution points it reproduces the DG spectral element method of chapter 6 (GLL collocation, lumped mass) — our tests
+confirm this to round-off, for advection and for Burgers.</li>
+<li>$g_{Ga}$ vanishes at the $p$ Gauss points (the zeros of $P_p$) and at $\xi = 1$; the last expression follows from $\xi P_p = \frac{(p+1)P_{p+1} + pP_{p-1}}{2p+1}$.</li>
+</ul>
+
+<figure class="widget" id="w-corr">
+<figcaption><b>Correction function plotter.</b> Left: $g_L(\xi)$ for $g_{DG}$, $g_2$, $g_{Ga}$ and a member of the VCJH family (parameter $c$, slider in units of
+$c_{HU}$). Right: their derivatives $g_L'(\xi)$ — this is what actually enters the scheme, evaluated at the solution points (dots: Gauss points).
+All curves pass through $(-1, 1)$ and $(1, 0)$. Tick "show $g_R$" to see the mirror images.</figcaption>
+</figure>
+
+<h2 id="equivalence">Why $g_{DG}$ gives DG</h2>
+<p>Take the nodal DG method in <em>strong form</em> (integrate by parts twice) with the exact mass matrix and the flux interpolated at the solution points,
+$f_h = F^D$. For every test polynomial $v$ of degree $\le p$:</p>
+$$\frac h2\int_{-1}^1 \partial_t u_h\, v\dd\xi = -\int_{-1}^1 (F^D)'\, v\dd\xi + \big(\hat F_{k-\frac12} - F^D(-1)\big)\,v(-1) - \big(\hat F_{k+\frac12} - F^D(1)\big)\,v(1).$$
+<p>Now multiply the FR update $\partial_t u_h = -\frac2h F'$ by $\frac h2 v$ and integrate:</p>
+$$\frac h2\int \partial_t u_h\, v = -\int (F^D)' v - \big(\hat F_{k-\frac12} - F^D(-1)\big)\int g_L' v - \big(\hat F_{k+\frac12} - F^D(1)\big)\int g_R' v .$$
+<p>The two agree for all $v$ exactly when $\int g_L' v = -v(-1)$ and $\int g_R' v = v(1)$ for every $v$ of degree $\le p$. For $g_L = R_{R,p+1}$, integrate by parts:
+$\int g_L' v = [g_L v]_{-1}^{1} - \int g_L v' = -v(-1) - \int g_L v'$, and the last integral vanishes because $g_L \propto P_{p+1} - P_p$ is orthogonal to all
+polynomials of degree $\le p-1$, in particular to $v'$. The mirror identity for $g_R$ follows by substituting $\xi \to -\xi$. Hence:</p>
+<div class="box def">
+<p><b>FR with $g_{DG}$ is identical to nodal DG in strong form with exact mass matrix and collocated flux</b> — for any flux, any solution points.
+For a linear flux the collocated flux is exact, so FR($g_{DG}$) is then simply <em>the</em> DG method of chapter 6 (weak or strong form, exact integration).</p>
+</div>
+<p>For a nonlinear flux the equivalent DG scheme interpolates $f(u_h)$ instead of integrating it exactly, i.e. it is aliased; over-integrated DG is a
+different scheme (our tests show the difference for Burgers). In the same way one checks that FR with $g_2$ on GLL points is the DG spectral element method.</p>
+
+<figure class="widget" id="w-frdg">
+<figcaption><b>FR vs DG, side by side.</b> Both schemes start from the same projected data and take the same SSP-RK3 steps. Top: both solutions. Bottom: the pointwise
+difference $|u_{FR} - u_{DG}|$ on a logarithmic axis. With matching pairs — $g_{DG}$ vs strong-form DG with exact mass, or $g_2$ on GLL points vs DG-SEM — the difference
+stays at the level of round-off ($\sim 10^{-15}$); with any other pairing it is of the size of the discretisation error.</figcaption>
+</figure>
+
+<h2 id="vcjh">The VCJH family: one parameter, many schemes</h2>
+<p>Vincent, Castonguay and Jameson (2011) found a one-parameter family of correction functions for which the scheme is provably stable for linear advection:</p>
+$$g_L = \frac{(-1)^p}{2}\Big[P_p - \frac{\eta_p\,P_{p-1} + P_{p+1}}{1+\eta_p}\Big],\qquad \eta_p = \frac{c\,(2p+1)\,(a_p\,p!)^2}{2},\qquad a_p = \frac{(2p)!}{2^p\,(p!)^2}.$$
+<p>One checks $g_L(-1) = 1$ and $g_L(1) = 0$ directly from $P_n(\pm1) = (\pm1)^n$. Special values of $c \ge 0$:</p>
+<table class="data">
+<tr><th>parameter</th><th>$\eta_p$</th><th>correction function</th></tr>
+<tr><td>$c = 0$</td><td>$0$</td><td>$g_{DG}$ (DG)</td></tr>
+<tr><td>$c_{SD} = \dfrac{2p}{(2p+1)(p+1)(a_p\,p!)^2}$</td><td>$\dfrac{p}{p+1}$</td><td>$g_{Ga}$ (a spectral difference scheme, Jameson 2010)</td></tr>
+<tr><td>$c_{HU} = \dfrac{2(p+1)}{(2p+1)\,p\,(a_p\,p!)^2}$</td><td>$\dfrac{p+1}{p}$</td><td>$g_2$ (Huynh)</td></tr>
+<tr><td>$c \to \infty$</td><td>$\infty$</td><td>$R_{R,p}$ (degree only $p$)</td></tr>
+</table>
+<p>(The identities in the table are verified in our tests by comparing Legendre coefficients.) For $c \ge 0$ the schemes are energy stable for linear
+advection with an upwind flux — not in the plain $L^2$ norm but in a Sobolev-type norm that adds, on each element, $\tfrac c2$ times the squared $p$-th derivative
+$(\partial_\xi^p u_h)^2$ (in reference coordinates). Consistently, all eigenvalues of the semi-discrete operator have $\mathrm{Re}\,\lambda \le 0$ in our tests. VCJH schemes can also be read as DG with a
+modified mass matrix, or as a filtered DG method (Allaneau &amp; Jameson 2011).</p>
+
+<h3>Time step versus accuracy</h3>
+<p>Increasing $c$ changes the spectrum so that the largest stable CFL number grows,
+from $c = 0$ (DG) through $c_{SD}$ and $c_{HU}$ up to a maximum at some $c_+ &gt; c_{HU}$ (computed numerically by the widget below; it depends on the RK method),
+after which it decreases again. The price is accuracy: for $0 \le c \le 64\,c_{HU}$ the error grows monotonically with $c$ (tested for $p = 1,\dots,4$). In our tests, $c = 64\,c_{HU}$ is more
+than ten times less accurate than DG for $p = 3$ and $N = 16$, while $c = c_{HU}/2$ and $2c_{HU}$ still converge at the full rate $p+1$. (For very large $c$ the
+behaviour on practical meshes becomes irregular; explore it in the accuracy widget.)</p>
+
+<figure class="widget" id="w-cflc">
+<figcaption><b>Stability vs $c$.</b> Left: the largest stable CFL number $\nu = |a|\Delta t/h$ (upwind flux, $N\to\infty$ by Bloch analysis) as a function of $c$, with
+$c_{DG} = 0$ (left edge), $c_{SD}$, $c_{HU}$ and the maximiser $c_+$ marked. Right: the scaled spectrum $\nu_{\max}\lambda$ for the selected $c$ against the stability region:
+at the critical CFL some eigenvalues touch the boundary.</figcaption>
+</figure>
+
+<figure class="widget" id="w-accc">
+<figcaption><b>Accuracy vs $c$.</b> $L^2$ error after one period of smooth periodic advection ($u_0 = \sin 2\pi x$, small time step so that only the spatial error
+is visible) as a function of $c$, for $N = 8$ and $N = 16$ elements. The vertical gap between the two curves (on a log axis) is the observed order:
+$\log_2(e_8/e_{16}) \approx p+1$ for moderate $c$; for large $c$ the error is larger and the observed rate on these coarse meshes becomes irregular.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Correction plotter: drag the VCJH slider from left to right and watch the curve move from $g_{DG}$ through $g_{Ga}$ ($c_{SD}$) and $g_2$ ($c_{HU}$) towards $R_{R,p}$.</li>
+<li>FR vs DG: choose $g_{DG}$ and "DG strong form, exact mass": round-off. Then switch the DG side to "DG weak form, over-integrated" with Burgers ($p = 3$) — the schemes differ.</li>
+<li>Choose $g_2$ with GLL points against DG-SEM: identical again.</li>
+<li>Stability vs $c$ for $p = 3$: the gain from DG to $c_+$ is more than a factor of two in the time step.</li>
+</ul>
+</div>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Comparing the wrong DG.</b> "FR with $g_{DG}$ equals DG" is only true for the matching variant (collocated flux, exact mass). Comparing against over-integrated
+DG for a nonlinear flux will show differences of the size of the discretisation error.</li>
+<li><b>Aliasing.</b> FR is a collocation method, so nonlinear fluxes are always aliased (like DG-SEM). Under-resolved simulations may need filtering or anti-aliasing.</li>
+<li><b>Shocks.</b> FR oscillates at discontinuities exactly like DG; it needs limiting or artificial viscosity.</li>
+<li><b>Too large $c$.</b> Bigger time steps are tempting, but beyond $c_+$ the CFL limit shrinks again, and the accuracy is worse than with DG.</li>
+</ul>
+</div>
+
+<h2 id="compare">FR compared with DG</h2>
+<table class="data">
+<tr><th></th><th>DG (chapter 6)</th><th>FR</th></tr>
+<tr><td>formulation</td><td>weak form, integrals</td><td>pointwise (collocation) at solution points</td></tr>
+<tr><td>mass matrix</td><td>needed (or lumped)</td><td>none</td></tr>
+<tr><td>ingredients</td><td>quadrature, $M$, $S$, face lifting</td><td>$D$, two vectors $g_L'(\xi_i)$, $g_R'(\xi_i)$</td></tr>
+<tr><td>family</td><td>one scheme per quadrature choice</td><td>one scheme per correction function (DG, SD, $g_2$, VCJH $c$)</td></tr>
+<tr><td>linear flux</td><td colspan="2">identical for $g_{DG}$; same polynomial whatever the solution points (FR, verified)</td></tr>
+<tr><td>conservation</td><td colspan="2">both exactly conservative</td></tr>
+</table>
+<p>For a linear flux the FR update does not even depend on where the solution points are: the flux interpolant is exact, so the evolving polynomial is the same
+for Gauss and for GLL points (our tests compare the two to round-off). The choice of points matters only for nonlinear fluxes (aliasing) and for cost.</p>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>FR evaluates the flux at solution points, corrects the discontinuous flux polynomial with $g_L$, $g_R$ so that it takes common values $\hat F$ at the faces, and differentiates.</li>
+<li>Correction functions: degree $p+1$, $g_L(-1) = 1$, $g_L(1) = 0$, $g_R(\xi) = g_L(-\xi)$; built from Radau polynomials.</li>
+<li>$g_{DG} = R_{R,p+1}$ recovers nodal DG (strong form, collocated flux) exactly; $g_2$ on GLL points recovers DG-SEM.</li>
+<li>The VCJH family ($c \ge 0$) is linearly stable; larger $c$ gives larger time steps up to $c_+$, at the cost of accuracy.</li>
+<li>FR is conservative, simple and cheap — and as oscillatory at shocks as DG.</li>
+</ul>
+<p>Next, chapter 8 leaves hyperbolic problems: DG for elliptic equations, where there is no wind to upwind with.</p>
+
+<h2 id="references">References</h2>
+<ul>
+<li>H. T. Huynh, <em>A flux reconstruction approach to high-order schemes including discontinuous Galerkin methods</em>, AIAA Paper 2007-4079, 2007.</li>
+<li>P. E. Vincent, P. Castonguay, A. Jameson, <em>A new class of high-order energy stable flux reconstruction schemes</em>, J. Sci. Comput. 47 (2011).</li>
+<li>A. Jameson, <em>A proof of the stability of the spectral difference method for all orders of accuracy</em>, J. Sci. Comput. 45 (2010).</li>
+<li>Y. Allaneau, A. Jameson, <em>Connections between the filtered discontinuous Galerkin method and the flux reconstruction approach to high order discretizations</em>, Comput. Methods Appl. Mech. Engrg. 200 (2011).</li>
+<li>Y. Liu, M. Vinokur, Z. J. Wang, <em>Spectral difference method for unstructured grids I: basic formulation</em>, J. Comput. Phys. 216 (2006).</li>
+<li>F. D. Witherden, A. M. Farrington, P. E. Vincent, <em>PyFR: an open source framework for solving advection–diffusion type problems on streaming architectures using the flux reconstruction approach</em>, Comput. Phys. Commun. 185 (2014).</li>
+<li>J. S. Hesthaven, T. Warburton, <em>Nodal Discontinuous Galerkin Methods</em>, Springer, 2008.</li>
+</ul>
+
+</main>
+</body>
+</html>

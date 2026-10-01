@@ -1,0 +1,330 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>6. Discontinuous Galerkin for conservation laws — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch06.js"></script>
+<style>
+  /* small matrix tables in the basis explorer */
+  table.mat { border-collapse: collapse; font-family: var(--font-mono); font-size: 11.5px; margin: 4px 0 10px; }
+  table.mat td { padding: 2px 6px; text-align: right; border: 1px solid var(--rule); }
+  table.mat td.zero { color: var(--ink-faint); }
+  .mat-wrap { overflow-x: auto; }
+  .mat-title { font-size: 12.5px; font-weight: 600; margin-top: 4px; }
+  /* full-width control grid below wide plots */
+  .widget-body > .controls.wide { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .6rem 1.4rem; align-items: start; }
+  .controls.wide .readout { grid-column: span 2; }
+</style>
+</head>
+<body data-chapter="06">
+<main class="content">
+
+<h1><span class="chapnum">6</span>Discontinuous Galerkin for conservation laws</h1>
+<p class="subtitle">High-order polynomials inside every cell, glued together only by numerical fluxes.</p>
+
+<p class="lead">Finite volumes (chapter 5) store <em>one number per cell</em> and must reconstruct slopes from the neighbours to get
+beyond first order. The <b>discontinuous Galerkin (DG)</b> method instead stores a whole polynomial of degree $p$ in every cell
+and evolves all its coefficients. Cells talk to each other only through the <span class="term" data-g="numflux">numerical flux</span>
+on their faces — exactly as in finite volumes. The result is a method that is high order, locally conservative, naturally upwind,
+works on any mesh, and keeps all heavy work inside the cells (which is why it loves GPUs, chapter 12).</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$u_t + f(u)_x = 0$</td><td>scalar conservation law in 1D; $f(u) = a u$ (advection) or $f(u) = u^2/2$ (Burgers)</td></tr>
+<tr><td>$K_k = [x_{k-\frac12}, x_{k+\frac12}]$</td><td>element (cell) $k = 1,\dots,N$, width $h$; faces $x_{k\pm\frac12}$</td></tr>
+<tr><td>$p$, $V_h^p$</td><td>polynomial degree; the <span class="term" data-g="broken">broken space</span> of functions that are polynomials of degree $\le p$ on each element</td></tr>
+<tr><td>$\xi \in [-1,1]$</td><td>reference coordinate, $x = x_{k-\frac12} + (\xi+1)\,h/2$, so $\frac{\mathrm d}{\mathrm dx} = \frac2h\frac{\mathrm d}{\mathrm d\xi}$</td></tr>
+<tr><td>$\ell_i(\xi)$, $\xi_i$</td><td><span class="term" data-g="nodal">nodal</span> (Lagrange) basis at nodes $\xi_0,\dots,\xi_p$: $\ell_i(\xi_j) = \delta_{ij}$</td></tr>
+<tr><td>$P_j(\xi)$</td><td>Legendre polynomials, the <span class="term" data-g="modal">modal</span> basis</td></tr>
+<tr><td>$u^-, u^+$</td><td>at a face: value from the element on its left ($K^-$) and on its right ($K^+$); the normal $n$ points from $K^-$ to $K^+$ (here: $+x$)</td></tr>
+<tr><td>$\jump{u} = u^- - u^+$, $\avg{u} = \frac12(u^-+u^+)$</td><td><span class="term" data-g="jump">jump</span> and <span class="term" data-g="average">average</span> (AGENTS.md convention)</td></tr>
+<tr><td>$\hat F(u^-,u^+)$</td><td>numerical flux through a face, = flux <em>out of</em> $K^-$</td></tr>
+<tr><td>$M, S, D$</td><td>reference <span class="term" data-g="massmat">mass</span>, stiffness and differentiation matrices</td></tr>
+<tr><td>$\nu = |a|\Delta t/h$</td><td>CFL number (with the <em>element</em> width $h$)</td></tr>
+</table>
+</div>
+
+<h2 id="fv-to-dg">From finite volumes to piecewise polynomials</h2>
+<p>A finite volume method knows only the cell averages $\bar u_k$. To compute a face flux to second order it guesses a slope from
+neighbouring averages (MUSCL), and higher orders need ever wider stencils. DG takes the opposite route: <b>make the slope (and the curvature, and …) an unknown
+of the cell itself</b>. The discrete solution $u_h$ is sought in the broken space</p>
+$$V_h^p = \big\{\, v : v|_{K_k} \text{ is a polynomial of degree} \le p \text{ for every } k \,\big\},$$
+<p>with <em>no continuity requirement</em> across faces. Each element owns $p+1$ coefficients; $p=0$ gives piecewise constants, i.e. exactly the
+finite volume unknowns. At every face $u_h$ has two values, $u^-$ from the left element and $u^+$ from the right one; their difference is the jump
+$\jump{u} = u^- - u^+$.</p>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Continuous finite elements (chapter 3) are like an <em>indexed</em> triangle mesh: neighbouring triangles share vertices, so attributes
+(colours, normals) interpolate continuously across edges. DG is like a <em>flat-shaded mesh with split vertices</em>: every element owns private
+copies of its vertex data, so attributes may jump across edges — and all the per-element work is independent, which is exactly what a GPU likes.</p>
+</div>
+
+<h2 id="scheme">Deriving the DG scheme</h2>
+<p>We want an equation for each element's polynomial. Take the conservation law, multiply by a <span class="term" data-g="testfn">test function</span>
+$v$ that is a polynomial of degree $\le p$ on $K_k$ (and zero elsewhere), and integrate over the element:</p>
+$$\int_{K_k} u_t\, v \dd x + \int_{K_k} f(u)_x\, v \dd x = 0 .$$
+<p>Integrate the second term by parts (the 1D divergence theorem of chapter 0): $\int_{K_k} f_x v = \big[f v\big]_{x_{k-\frac12}}^{x_{k+\frac12}} - \int_{K_k} f\,v_x$. Writing
+$v(x^-_{k+\frac12})$ for the value of $v$ at the right end of $K_k$ and $v(x^+_{k-\frac12})$ at its left end,</p>
+$$\int_{K_k} u_t\, v \dd x - \int_{K_k} f(u)\, v_x \dd x + f\big(u(x_{k+\frac12})\big)\, v(x^-_{k+\frac12}) - f\big(u(x_{k-\frac12})\big)\, v(x^+_{k-\frac12}) = 0 .$$
+<p>So far this is exact (it is the <span class="term" data-g="weakform">weak form</span> on one cell). Now replace $u$ by $u_h \in V_h^p$. Inside the element
+$f(u_h)$ is well defined, but <b>at a face $u_h$ has two values</b>, and $f(u(x_{k+\frac12}))$ is ambiguous. The cure is the same as in finite volumes:
+use a numerical flux $\hat F_{k+\frac12} = \hat F(u^-_{k+\frac12}, u^+_{k+\frac12})$ that combines both values.</p>
+
+<div class="box def">
+<span class="box-title">The DG method (weak form)</span>
+<p>Find $u_h(t) \in V_h^p$ such that on every element $K_k$ and for every polynomial $v$ of degree $\le p$</p>
+$$\int_{K_k} \partial_t u_h\, v \dd x \;=\; \underbrace{\int_{K_k} f(u_h)\, v_x \dd x}_{\text{volume term}} \;-\; \underbrace{\Big(\hat F_{k+\frac12}\, v(x^-_{k+\frac12}) - \hat F_{k-\frac12}\, v(x^+_{k-\frac12})\Big)}_{\text{surface (face) term}} .$$
+</div>
+
+<p>Every element needs only its own polynomial and the traces of its two neighbours — a compact stencil whatever $p$ is. Popular fluxes
+(chapter 5), written with jumps and averages:</p>
+<ul>
+<li><b>upwind</b> (advection, $f = au$): $\hat F = a\avg{u} + \frac{|a|}2\jump{u}$, which equals $a u^-$ for $a > 0$ and $a u^+$ for $a&lt;0$;</li>
+<li><b>central</b>: $\hat F = \avg{f(u)}$ — no upwinding at all;</li>
+<li><b>Rusanov / local Lax–Friedrichs</b>: $\hat F = \avg{f(u)} + \frac{\alpha}{2}\jump{u}$ with $\alpha = \max(|f'(u^-)|, |f'(u^+)|)$ (for advection it equals upwind).</li>
+</ul>
+
+<h3>Conservation for free</h3>
+<p>The constant $v = 1$ is an allowed test function. Then $v_x = 0$ and the scheme says</p>
+$$\frac{\mathrm d}{\mathrm dt}\int_{K_k} u_h \dd x = -\big(\hat F_{k+\frac12} - \hat F_{k-\frac12}\big),$$
+<p>which is <em>exactly</em> the finite volume update for the cell average. What leaves $K_k$ through a face enters its neighbour, so the sum over all elements
+telescopes: the total mass $\int u_h\,\mathrm dx$ is conserved to round-off, for any $p$, any flux, linear or nonlinear. And for $p = 0$ the volume term vanishes
+completely: <b>DG with $p = 0$ is the first-order finite volume method.</b></p>
+
+<figure class="widget" id="w-dg1d">
+<figcaption><b>DG playground.</b> Each element carries its own polynomial (coloured curves; dots = nodes). Dashed: the exact solution (for Burgers:
+a fine finite volume reference). Choose the degree $p$, the number of elements $N$, the flux, the initial data and the limiter, then press play
+(SSP-RK3 time stepping, $\Delta t = \text{CFL}\cdot h/(\max|f'|\,(2p+1))$). The readout tracks the mass (conserved to round-off), the energy $\tfrac12\|u_h\|^2$
+and, for advection, the $L^2$ error.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Smooth sine, $N = 8$: compare $p = 0$ (a smeared mess after one period) with $p = 3$ (indistinguishable from the exact solution). Same number of elements!</li>
+<li>Look closely at the faces: the jumps $\jump{u}$ are tiny for smooth data — DG's discontinuity is a measure of its own error.</li>
+<li>Square wave with $p = 3$, no limiter: overshoots and undershoots next to the jumps (Gibbs). Switch on the minmod limiter: monotone, but the corners round off.</li>
+<li>Switch to the <em>central</em> flux: the semi-discrete scheme conserves the energy, so it decays only slightly (through the damping of
+the RK method), and the wiggles spread over the whole domain.</li>
+</ul>
+</div>
+
+<h2 id="bases">Reference element, bases and matrices</h2>
+<p>To compute, map each element to the <span class="term" data-g="refelem">reference element</span> $[-1,1]$ via $x = x_{k-\frac12} + (\xi + 1)h/2$; then
+$\mathrm dx = \frac h2\,\mathrm d\xi$ and $v_x = \frac2h\, v_\xi$. Expand $u_h|_{K_k}(\xi, t) = \sum_{j=0}^{p} u_{k,j}(t)\,\phi_j(\xi)$ in a basis $\phi_0,\dots,\phi_p$ of
+polynomials of degree $\le p$. Two families are popular:</p>
+<ul>
+<li><b>Modal</b>: Legendre polynomials $\phi_j = P_j$. They are orthogonal, $\int_{-1}^1 P_iP_j\,\mathrm d\xi = \frac{2}{2j+1}\delta_{ij}$, so the mass matrix is diagonal.
+The coefficient $u_{k,0}$ is the cell average and $u_{k,1}$ the "slope" — handy for limiters.</li>
+<li><b>Nodal</b>: Lagrange polynomials $\phi_j = \ell_j$ through nodes $\xi_0,\dots,\xi_p$, so the coefficients are point values $u_{k,j} = u_h(\xi_j)$. We use
+<span class="term" data-g="gll">Gauss–Lobatto–Legendre (GLL)</span> nodes, which include the end points $\pm1$ (the face values are then simply the first and last coefficients) or
+Gauss–Legendre nodes (interior only).</li>
+</ul>
+<p>Testing with $v = \phi_i$ for $i = 0,\dots,p$ turns the DG equation on element $K_k$ into $p+1$ ODEs:</p>
+$$\frac h2 \sum_{j} M_{ij}\, \frac{\mathrm d u_{k,j}}{\mathrm dt} = \int_{-1}^1 f(u_h)\, \phi_i'(\xi)\dd\xi \;-\; \phi_i(1)\,\hat F_{k+\frac12} + \phi_i(-1)\,\hat F_{k-\frac12},
+\qquad M_{ij} = \int_{-1}^1 \phi_i\phi_j \dd\xi .$$
+<p>(The factors: $\int_{K_k} u_t v\,\mathrm dx = \frac h2\int u_t v\,\mathrm d\xi$ and $\int_{K_k} f v_x\,\mathrm dx = \int f\, v_\xi\,\mathrm d\xi$ because $\frac h2\cdot\frac2h = 1$.)
+For linear advection $f = au$ this is a matrix equation with the <b>stiffness matrix</b> $S_{ij} = \int_{-1}^1 \phi_i\,\phi_j'\,\mathrm d\xi$:</p>
+$$\frac h2\, M\,\frac{\mathrm d\mathbf u_k}{\mathrm dt} = a\,S^{\mathsf T}\mathbf u_k - \boldsymbol\phi(1)\,\hat F_{k+\frac12} + \boldsymbol\phi(-1)\,\hat F_{k-\frac12}.$$
+<p><b>Example, $p = 1$ with nodes $\pm1$:</b> $\ell_0 = \frac{1-\xi}2$, $\ell_1 = \frac{1+\xi}2$, $\ell_0' = -\tfrac12$, $\ell_1' = \tfrac12$, and</p>
+$$M = \begin{pmatrix}\tfrac23 & \tfrac13\\[2pt] \tfrac13 & \tfrac23\end{pmatrix},\qquad
+S = \begin{pmatrix}-\tfrac12 & \tfrac12\\[2pt] -\tfrac12 & \tfrac12\end{pmatrix},\qquad
+D = \begin{pmatrix}-\tfrac12 & \tfrac12\\[2pt] -\tfrac12 & \tfrac12\end{pmatrix},$$
+<p>where $D_{ij} = \ell_j'(\xi_i)$ is the <b>differentiation matrix</b> (nodal values of $u$ ↦ nodal values of $u_\xi$). Note $S + S^{\mathsf T} = \mathrm{diag}(-1, 1)$:
+this is integration by parts, $\int (\phi_i\phi_j)' = [\phi_i\phi_j]_{-1}^{1}$, in matrix form. In general
+$S + S^{\mathsf T} = \boldsymbol\phi(1)\boldsymbol\phi(1)^{\mathsf T} - \boldsymbol\phi(-1)\boldsymbol\phi(-1)^{\mathsf T}$, which for GLL nodes and any $p$ is
+$\mathrm{diag}(-1, 0, \dots, 0, 1)$. This <b>summation-by-parts</b> property is the discrete reason why DG is stable.</p>
+
+<figure class="widget" id="w-basis">
+<figcaption><b>Basis explorer.</b> Left: the $p+1$ basis functions on the reference element. Right: the exact mass matrix $M$ and, for nodal bases, the
+<em>lumped</em> (GLL-quadrature) mass matrix and the differentiation matrix. Legendre gives a diagonal $M$ with entries $2/(2j+1)$; GLL Lagrange gives a full $M$ that
+GLL quadrature replaces by its diagonal of weights; equispaced nodes give wildly oscillating basis functions for large $p$ (Runge's phenomenon).</figcaption>
+</figure>
+
+<h2 id="quadrature">Quadrature, lumping and aliasing</h2>
+<p>The integrals have to be computed by quadrature. Two strategies are common, and they are <em>not</em> the same method:</p>
+<ol>
+<li><b>Exact integration ("over-integration").</b> Use a Gauss rule with enough points: the mass matrix needs degree $2p$; the Burgers volume term
+$\int \tfrac12 u_h^2\,\ell_i'$ has degree $3p-1$. Our code uses $\lceil (3p+2)/2\rceil + 1$ Gauss points by default, enough for both.</li>
+<li><b>Collocation.</b> Use the $p+1$ solution nodes themselves as quadrature points. With GLL nodes this is the classical
+<b>DG spectral element method (DG-SEM)</b>. Then $M$ becomes diagonal, $M = \mathrm{diag}(w_0,\dots,w_p)$ — the <b>lumped</b> mass matrix — and the flux enters only
+through its nodal values $f(u_{k,j})$. The price: GLL with $p+1$ points is exact only up to degree $2p-1$, so the lumped $M$ is <em>not</em> the exact Gram matrix
+(it has the same row sums, $\int\ell_i$, but differs entry by entry).</li>
+</ol>
+<p>For linear advection every volume integrand has degree $\le 2p-1$, so the <em>only</em> inexact ingredient of DG-SEM is the lumped mass matrix; both versions
+converge at the optimal rate $p+1$ (tested for $p = 1,\dots,4$). For a nonlinear flux collocation replaces $f(u_h)$ by its degree-$p$ interpolant: the
+part of $u_h^2$ of degree $p+1,\dots,2p$ is folded back onto low degrees. This is <b>aliasing</b> — the same phenomenon as sampling a signal below its
+Nyquist rate. Concretely: with the entropy-conservative flux $\hat F = \big((u^-)^2 + u^-u^+ + (u^+)^2\big)/6$ and exact integration, the semi-discrete Burgers
+energy $\frac12\|u_h\|^2$ is conserved exactly (take $v = u_h$: $\int \frac{u_h^2}2\,\partial_x u_h = [u_h^3/6]$, and the face terms cancel it); with GLL collocation
+the same flux produces a nonzero energy rate for generic, under-resolved data. Aliasing errors are harmless for well-resolved solutions but can
+destabilise under-resolved simulations; the cures are over-integration, filtering, or split forms.</p>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Squaring a polynomial doubles its "frequency content", just like multiplying two textures. Evaluating the product only at the original sample points
+aliases the high frequencies into low ones — the moiré patterns of texture minification. Over-integration is supersampling.</p>
+</div>
+
+<h2 id="semidiscrete">The semi-discrete system and one update, dissected</h2>
+<p>Collecting all elements gives a large system of ODEs, $\frac{\mathrm d\mathbf u}{\mathrm dt} = L(\mathbf u)$ ("method of lines"). Because $M$ is a small
+$(p{+}1)\times(p{+}1)$ block per element, $L$ is cheap to evaluate: compute the face fluxes, then on each element
+$\frac{\mathrm d\mathbf u_k}{\mathrm dt} = \frac2h M^{-1}\big(\text{volume} - \text{surface}\big)$. We advance it with an explicit
+<span class="term" data-g="ssprk">SSP Runge–Kutta</span> method (SSP-RK3 of Shu & Osher by default).</p>
+
+<p>The two parts of the right-hand side have intuitive roles. The <b>volume term</b> $\frac2h M^{-1}\int f(u_h)\,\phi_i'$ moves material around <em>inside</em> the
+element; its integral against $v = 1$ is zero, so it never changes the cell's mass. The <b>surface term</b> is a pair of "lifted" face corrections: it injects
+what flows in through the left face and removes what leaves through the right face, spread over the element by $M^{-1}$. Their sum is $\partial_t u_h$, which
+for smooth data approximates $-f(u)_x$.</p>
+
+<figure class="widget" id="w-anatomy">
+<figcaption><b>Anatomy of one DG update</b> for linear advection ($a = 1$, upwind flux). Top: $u_h$ around the selected element (highlighted) with the face
+values $u^\pm$ and fluxes $\hat F$ (arrows). Bottom: $\partial_t u_h$ on that element split into the volume part, the surface part and their sum, compared with the exact
+$-a\,u_x$ (dashed). For smooth data the sum matches $-a u_x$ while the two parts individually do not. The readout checks that the volume part has zero mean and that the
+element mass $\int_{K_k} u_h\,\mathrm dx$ changes exactly at the rate $-(\hat F_{k+\frac12} - \hat F_{k-\frac12})$.</figcaption>
+</figure>
+
+<h2 id="stability">Upwind vs central flux: L² stability</h2>
+<p>Why do we need upwinding? Take linear advection $f = au$ and test with $v = u_h$ itself (allowed: $u_h|_{K_k}$ is a polynomial of degree $\le p$). With exact
+integration, $\int_{K_k} a\,u_h\,\partial_x u_h = \frac a2\big[(u^-_{k+\frac12})^2 - (u^+_{k-\frac12})^2\big]$, so</p>
+$$\frac12\frac{\mathrm d}{\mathrm dt}\int_{K_k} u_h^2 \dd x = \frac a2\big(u^-_{k+\frac12}\big)^2 - \frac a2\big(u^+_{k-\frac12}\big)^2 - \hat F_{k+\frac12}\,u^-_{k+\frac12} + \hat F_{k-\frac12}\,u^+_{k-\frac12}.$$
+<p>Sum over all elements (periodic domain) and collect the terms belonging to one face, where $u^-$ comes from the left element and $u^+$ from the right one:</p>
+$$\frac a2\big((u^-)^2 - (u^+)^2\big) - \hat F\,(u^- - u^+) = \jump{u}\big(a\avg{u} - \hat F\big).$$
+<p>For a flux of the form $\hat F = a\avg{u} + \frac\lambda2\jump{u}$ this is $-\frac\lambda2\jump{u}^2$, hence</p>
+<div class="box def">
+$$\frac12\frac{\mathrm d}{\mathrm dt}\|u_h\|_{L^2}^2 = -\sum_{\text{faces}} \frac{\lambda}{2}\,\jump{u}^2 .$$
+<p><b>Upwind</b> ($\lambda = |a|$): the energy decreases, and the dissipation is proportional to the squared jumps.
+<b>Central</b> ($\lambda = 0$): the energy is exactly conserved.</p>
+</div>
+<p>The upwind flux damps exactly what DG cannot represent well — the jumps. The central flux is "stable" in the sense that the energy does not grow, but nothing
+damps the high-frequency garbage; its convergence is irregular (we observe at least order $p$, sometimes $p+1$, depending on $p$ and $N$), while upwind gives a clean
+$p+1$. The same argument works with GLL collocation, in the discrete norm $\mathbf u^{\mathsf T}M_{\text{lumped}}\mathbf u$, thanks to summation by parts. Our tests
+check the matrix version: the symmetric part of $(h/2)M L$ is negative semidefinite for upwind and zero for central.</p>
+
+<h2 id="cfl">Spectrum and the CFL condition</h2>
+<p>For linear advection on a periodic mesh, $L$ is a matrix and its eigenvalues — the <span class="term" data-g="spectrum">spectrum</span> — decide whether an
+explicit time step is stable. One step of an RK method multiplies each eigen-component by $R(\lambda\Delta t)$, where $R$ is the method's <em>stability
+function</em> (a polynomial; e.g. $R(z) = 1 + z + z^2/2 + z^3/6$ for SSP-RK3). Stability requires $|R(\lambda\Delta t)| \le 1$ for every eigenvalue
+$\lambda$: the scaled spectrum $\lambda\Delta t$ must fit inside the stability region $\{z : |R(z)| \le 1\}$.</p>
+<p>The upwind eigenvalues lie in the left half plane (energy decreases), the central ones on the imaginary axis. Their size grows with $p$, so the
+time step must shrink, roughly like $h/(2p+1)$. Precisely, with the CFL number $\nu = |a|\Delta t/h$ (element width $h$), the largest stable values computed from the
+spectrum (Bloch analysis, $N \to \infty$) are:</p>
+<table class="data">
+<tr><th>degree $p$</th><th>RK method</th><th>max stable $\nu$</th><th>remark</th></tr>
+<tr><td>0</td><td>forward Euler</td><td>1</td><td>first-order upwind FV</td></tr>
+<tr><td>0</td><td>SSP-RK3</td><td>1.256</td><td></td></tr>
+<tr><td>1</td><td>SSP-RK2</td><td>0.333</td><td>= 1/3, as listed by Cockburn–Shu</td></tr>
+<tr><td>1</td><td>SSP-RK3</td><td>0.409</td><td></td></tr>
+<tr><td>2</td><td>SSP-RK3</td><td>0.209</td><td>as listed by Cockburn–Shu</td></tr>
+<tr><td>3</td><td>SSP-RK3</td><td>0.130</td><td></td></tr>
+<tr><td>3</td><td>classical RK4</td><td>0.145</td><td></td></tr>
+</table>
+<p>For SSP-RK3 the product $\nu_{\max}\,(2p+1)$ stays between $0.7$ and $1.3$ for $p = 1,\dots,5$, hence the rule of thumb $\Delta t \approx h/(|a|(2p+1))$.
+Forward Euler is useless for DG with $p\ge1$: part of the spectrum hugs the imaginary axis, where $|1+z| > 1$. The lumped (GLL) mass matrix gives a
+markedly larger stable time step (more than 1.5× for $p = 1,\dots,4$ in our tests) — one reason DG-SEM is popular.</p>
+
+<figure class="widget" id="w-spectrum">
+<figcaption><b>Spectrum and stability region.</b> Dots: eigenvalues of the DG operator for periodic advection on $N$ elements, multiplied by $\Delta t = \nu h/|a|$.
+Shaded: the stability region $|R(z)|\le 1$ of the chosen RK method. Increase the CFL number until some dots leave the region — they turn red and the scheme
+becomes unstable. The readout gives the largest stable $\nu$ for this $N$ (bisection on the eigenvalues).</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Upwind, $p = 2$, SSP-RK3: find the critical CFL with the slider and compare with the table. Then switch to forward Euler.</li>
+<li>Central flux: all eigenvalues sit on the imaginary axis. SSP-RK3 and RK4 contain a piece of that axis (up to $\sqrt3$ and $2\sqrt2$); SSP-RK2 does not.</li>
+<li>Lumped mass: the spectrum shrinks, the critical CFL grows.</li>
+</ul>
+</div>
+
+<h2 id="limiting">Shocks, Gibbs oscillations and slope limiting</h2>
+<p>A polynomial cannot jump. Near a discontinuity the best degree-$p$ fit overshoots (Gibbs phenomenon), and for nonlinear problems these
+oscillations can grow or create unphysical values (negative densities in gas dynamics). <b>Godunov's theorem</b> (chapter 5) says that a linear scheme that never creates new extrema
+is at most first order accurate, so we need a nonlinear device: a <span class="term" data-g="limiter">limiter</span>. The classical choice for DG is the
+slope limiter of Cockburn and Shu, applied after every RK stage:</p>
+<ol>
+<li><b>Detect troubled elements.</b> Let $\bar u_k$ be the cell average and $\Delta^\pm = \pm(\bar u_{k\pm1} - \bar u_k)$. The element is fine if the deviations of
+its face values from the average, $u^-_{k+\frac12} - \bar u_k$ and $\bar u_k - u^+_{k-\frac12}$, are not larger than (and have the same sign as) the neighbouring
+differences: $\operatorname{minmod}(u^-_{k+\frac12} - \bar u_k, \Delta^-, \Delta^+) = u^-_{k+\frac12} - \bar u_k$, and similarly on the left.</li>
+<li><b>Limit.</b> In troubled elements keep only the linear part $\bar u_k + s_k\,\xi$ and replace its slope by
+$s_k \leftarrow \operatorname{minmod}(s_k, \tfrac12\Delta^-, \tfrac12\Delta^+)$, i.e. $u_x \leftarrow \operatorname{minmod}(u_x, \Delta^-/h, \Delta^+/h)$, the MUSCL minmod slope.</li>
+</ol>
+<p>Here $\operatorname{minmod}(a,b,c)$ is the smallest in magnitude if all three have the same sign, else $0$. The cell average is never touched, so <b>conservation is
+preserved</b>. Pure minmod also flattens smooth extrema (it cannot tell a peak from a shock), which degrades accuracy there. The <b>TVB</b> fix (Shu 1987)
+leaves a quantity alone if it is small, $|a| \le M h^2$, with a user constant $M$ of the size of $|u_{xx}|$ at extrema.</p>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Limiter everywhere:</b> with $M = 0$ the limiter fires at every smooth extremum, and a sine wave slowly turns into a trapezoid. Use TVB ($M&gt;0$) or a better troubled-cell indicator.</li>
+<li><b>Too large a time step:</b> DG's CFL limit shrinks like $1/(2p+1)$. Using the finite-volume habit $\nu \approx 0.9$ with $p = 3$ explodes within a few steps.</li>
+<li><b>Aliasing:</b> under-resolved nonlinear problems with collocation can blow up even without shocks; over-integrate or filter.</li>
+<li><b>Central flux:</b> energy-conserving does not mean accurate — without dissipation the high-frequency errors never decay.</li>
+</ul>
+</div>
+
+<h2 id="twod">Two dimensions: tensor products on quads</h2>
+<p>On a Cartesian mesh of rectangles the reference element is the square $[-1,1]^2$ and the natural space is $Q_p$: polynomials of degree $\le p$ in
+each variable separately, with the tensor-product basis $\ell_i(\xi)\,\ell_j(\eta)$ and nodes at the tensor GLL points $(\xi_i, \eta_j)$ — $(p+1)^2$ per element.
+For $u_t + \nabla\cdot\mathbf F(u) = 0$ the DG equation on an element $K$ is</p>
+$$\int_K \partial_t u_h\, v \dd\mathbf x = \int_K \mathbf F(u_h)\cdot\nabla v \dd\mathbf x - \int_{\partial K} \hat F(u^-, u^+, \mathbf n)\, v \dd s,$$
+<p>with the numerical flux now taken in the direction of the outward normal $\mathbf n$. With GLL collocation (DG-SEM) everything factorises: the
+volume term becomes the 1D differentiation matrix applied along every grid line in $x$ and in $y$, and each face is a 1D set of $p+1$ points where neighbours meet —
+exactly the 1D scheme, applied line by line, like a separable image filter. Faces of a structured grid with periodic wrap-around are found by index arithmetic;
+on unstructured meshes one needs a face-to-element connectivity table instead.</p>
+
+<figure class="widget" id="w-dg2d">
+<figcaption><b>2D DG on quads</b> (DG-SEM, Rusanov flux, SSP-RK3, periodic unit square). The colour is the true polynomial evaluated at every pixel, so you can
+see the small jumps across element edges (thin lines). The rotating blob makes one full revolution in $t = 1$; compare $p = 1$ and $p = 4$ on the same mesh.
+Burgers' equation $u_t + (u^2/2)_x + (u^2/2)_y = 0$ steepens a smooth wave into a shock along the diagonal (no limiter here: watch the oscillations appear).</figcaption>
+</figure>
+
+<h2 id="compare">DG vs finite volumes vs continuous FEM</h2>
+<table class="data">
+<tr><th></th><th>finite volume</th><th>DG</th><th>continuous FEM</th></tr>
+<tr><td>unknowns</td><td>1 per cell (average)</td><td>$p+1$ per cell (1D), private to the cell</td><td>shared at vertices/edges</td></tr>
+<tr><td>high order via</td><td>wide reconstruction stencils</td><td>larger $p$, stencil stays nearest-neighbour</td><td>larger $p$</td></tr>
+<tr><td>coupling</td><td>face fluxes</td><td>face fluxes</td><td>shared unknowns</td></tr>
+<tr><td>mass matrix</td><td>diagonal (cell volumes)</td><td>block diagonal: invert per element</td><td>global sparse matrix</td></tr>
+<tr><td>local conservation</td><td>yes</td><td>yes (test with $v = 1$)</td><td>only in a global/weaker sense</td></tr>
+<tr><td>upwinding</td><td>in the flux</td><td>in the flux</td><td>needs extra stabilisation</td></tr>
+<tr><td>explicit time step</td><td>$\sim h/|a|$</td><td>$\sim h/(|a|(2p+1))$</td><td>needs a mass solve (or lumping)</td></tr>
+</table>
+<p>DG pays for its flexibility with more unknowns than continuous FEM (duplicated face values). For elliptic problems, where there is no
+"wind", the fluxes have to be designed differently — that is chapter 8 (interior penalty).</p>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>DG approximates in the broken space $V_h^p$: a polynomial per element, discontinuous across faces.</li>
+<li>Test with polynomials on one element, integrate by parts, replace the face flux by a numerical flux: volume term + surface term.</li>
+<li>Testing with $v = 1$ gives the finite volume update: local conservation. $p = 0$ <em>is</em> first-order FV.</li>
+<li>Upwind flux: $\frac{\mathrm d}{\mathrm dt}\frac12\|u_h\|^2 = -\sum\frac{|a|}2\jump{u}^2 \le 0$; central flux: energy conserved, no damping.</li>
+<li>Smooth solutions: error $O(h^{p+1})$. Explicit time steps: $\nu = |a|\Delta t/h \lesssim 1/(2p+1)$.</li>
+<li>Exact integration vs GLL collocation (lumped mass, DG-SEM): equal accuracy for linear problems, aliasing for nonlinear ones.</li>
+<li>Discontinuities need limiters (minmod/TVB), which keep cell averages and hence conservation.</li>
+</ul>
+<p>Next, chapter 7 rewrites the same method without any integrals: <em>flux reconstruction</em>.</p>
+
+<h2 id="references">References</h2>
+<ul>
+<li>W. H. Reed, T. R. Hill, <em>Triangular mesh methods for the neutron transport equation</em>, Los Alamos report LA-UR-73-479, 1973.</li>
+<li>C.-W. Shu, <em>TVB uniformly high-order schemes for conservation laws</em>, Math. Comp. 49 (1987).</li>
+<li>C.-W. Shu, S. Osher, <em>Efficient implementation of essentially non-oscillatory shock-capturing schemes</em>, J. Comput. Phys. 77 (1988).</li>
+<li>B. Cockburn, C.-W. Shu, <em>TVB Runge–Kutta local projection discontinuous Galerkin finite element method for conservation laws II: general framework</em>, Math. Comp. 52 (1989).</li>
+<li>B. Cockburn, C.-W. Shu, <em>Runge–Kutta discontinuous Galerkin methods for convection-dominated problems</em>, J. Sci. Comput. 16 (2001).</li>
+<li>E. Tadmor, <em>The numerical viscosity of entropy stable schemes for systems of conservation laws I</em>, Math. Comp. 49 (1987).</li>
+<li>J. S. Hesthaven, T. Warburton, <em>Nodal Discontinuous Galerkin Methods</em>, Springer, 2008.</li>
+<li>D. A. Kopriva, <em>Implementing Spectral Methods for Partial Differential Equations</em>, Springer, 2009.</li>
+<li>G. J. Gassner, <em>A skew-symmetric discontinuous Galerkin spectral element discretization and its relation to SBP-SAT finite difference methods</em>, SIAM J. Sci. Comput. 35 (2013).</li>
+</ul>
+
+</main>
+</body>
+</html>
