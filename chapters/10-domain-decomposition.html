@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10. Domain decomposition — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch10.js"></script>
+<style>
+  figure.diagram { margin: 1.2rem auto; text-align: center; }
+  figure.diagram svg { width: 420px; }
+  figure.diagram svg { max-width: 100%; height: auto; }
+  figure.diagram figcaption { color: var(--ink-soft); font-size: 13.5px; margin-top: .4rem; text-align: left; }
+  figure.diagram .ink { fill: none; stroke: var(--ink); stroke-width: 2; }
+  figure.diagram .d1 { fill: var(--accent); fill-opacity: .22; stroke: var(--accent); stroke-width: 2; }
+  figure.diagram .d2 { fill: var(--accent-2); fill-opacity: .22; stroke: var(--accent-2); stroke-width: 2; }
+  figure.diagram .g1 { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-dasharray: 7 4; }
+  figure.diagram .g2 { fill: none; stroke: var(--accent-2); stroke-width: 3.5; stroke-dasharray: 7 4; }
+  figure.diagram text { fill: var(--ink); font: 15px var(--font-ui); }
+  figure.diagram text.c1 { fill: var(--accent); font-weight: 600; }
+  figure.diagram text.c2 { fill: var(--accent-2); font-weight: 600; }
+</style>
+</head>
+<body data-chapter="10">
+<main class="content">
+
+<h1><span class="chapnum">10</span>Domain decomposition</h1>
+<p class="subtitle">Divide and conquer for PDE solvers: overlapping Schwarz methods, coarse spaces, Schur complements and interface problems.</p>
+
+<p class="lead">A fine mesh in 2D or 3D produces millions of unknowns. No single processor can, or should, solve such a system on its own.
+<span class="term" data-g="ddm">Domain decomposition</span> cuts the domain into pieces, solves small problems on the pieces
+(in parallel, with fast direct solvers) and makes the pieces agree through an iteration. Two ideas carry the whole field. Subdomains
+must exchange information through their boundaries, either by <em>overlapping</em> (Schwarz methods) or through an <em>interface problem</em>
+(Schur complement methods). And because a local exchange moves information only to the neighbours, every scalable method needs a small <em>global</em>
+<span class="term" data-g="coarse">coarse problem</span>.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$\Omega = (0,1)^2$, $h = 1/N$</td><td>domain and mesh size; the mesh is the $N\times N$ grid, each square cut into two triangles</td></tr>
+<tr><td>$A\mathbf u = \mathbf b$</td><td>the global P1 finite element system of $-\Delta u = f$, $u = 0$ on $\partial\Omega$ (chapter 3); $n = (N-1)^2$ unknowns, one per interior vertex</td></tr>
+<tr><td>$\Omega_k$, $k = 1..K$</td><td>non-overlapping subdomains ($K_x\times K_y$ boxes of width $H \approx 1/K_x$)</td></tr>
+<tr><td>$\Omega_k'$, $\delta$</td><td>overlapping subdomains (each box grown by $\ell$ layers of cells); neighbours overlap in a strip of width $\delta = 2\ell h$</td></tr>
+<tr><td>$R_k$, $R_k^T$</td><td>restriction to the unknowns inside $\Omega_k'$ (a 0/1 matrix that picks entries); $R_k^T$ extends by zero</td></tr>
+<tr><td>$A_k = R_k A R_k^T$</td><td>local matrix = the Poisson problem on $\Omega_k'$ with Dirichlet conditions on $\partial\Omega_k'$</td></tr>
+<tr><td>$D_k$</td><td>0/1 diagonal matrix marking the unknowns <em>owned</em> by subdomain $k$; $\sum_k R_k^T D_k R_k = I$</td></tr>
+<tr><td>$R_0^T$, $A_0 = R_0 A R_0^T$</td><td>coarse basis (one column per coarse function) and coarse matrix</td></tr>
+<tr><td>$M^{-1}$, $\kappa(\cdot)$</td><td>a preconditioner (an approximation of $A^{-1}$); the <span class="term" data-g="condition">condition number</span></td></tr>
+<tr><td>$I_k$, $\Gamma$</td><td>unknowns strictly inside $\Omega_k$; unknowns on the interface (the cut lines)</td></tr>
+<tr><td>$S$, $S^{(k)}$</td><td>Schur complement on $\Gamma$; local Schur complement (Dirichlet-to-Neumann map) of subdomain $k$</td></tr>
+<tr><td>$\lambda$, $\theta$</td><td>interface values; relaxation parameter of the Dirichlet–Neumann method</td></tr>
+</table>
+</div>
+
+<h2 id="why">Why divide the domain?</h2>
+<p>Three reasons, from hardware to mathematics:</p>
+<ul>
+<li><b>Parallel computers have distributed memory.</b> A cluster is many computers connected by a network; each one can only touch its own memory
+quickly. The natural way to distribute a mesh is to give each processor a contiguous piece of the domain (a <em>subdomain</em>). Work on the
+piece is local; communication happens only across the piece's boundary, whose size (a curve in 2D) is much smaller than the piece itself (an area).
+This <em>surface-to-volume</em> effect is why domain decomposition scales.</li>
+<li><b>Direct solvers do not scale.</b> The banded LU of chapter 3 (reverse Cuthill–McKee + band elimination) applied to our $N\times N$ grid problem has
+bandwidth $w = N - 1 = \sqrt n$ (checked in the tests), so its cost $\approx n w^2$ grows like $n^2$, and its memory like $n w = n^{3/2}$. Cut the square into
+$K\times K$ boxes and each box costs $(n/K^2)^2$: all of them together cost $n^2/K^2$, a factor $K^2$ less, and they can run at the same time.
+The price: the pieces must be glued together by an iteration.</li>
+<li><b>Iterative solvers alone are slow.</b> Plain <span class="term" data-g="cgsolver">conjugate gradients</span> needs about $\sqrt{\kappa(A)}$
+iterations, and for the Laplacian $\kappa(A) \sim h^{-2}$ (for our matrix exactly $\kappa(A) = \cot^2(\pi h/2) \approx 4/(\pi h)^2$, see below). Every refinement
+of the mesh doubles the iteration count. Domain decomposition provides <em>preconditioners</em> that remove this growth.</li>
+</ul>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy: tiles and halos</span>
+<p>A GPU renders the screen in <em>tiles</em>, and a parallel image filter splits a picture into blocks, one per core. A blur of radius $r$ cannot be
+computed tile by tile: each tile must first read a <em>halo</em> (ghost cells, a guard band) of $r$ pixels owned by its neighbours. Overlapping Schwarz
+methods are exactly this: each subdomain reads an overlap region from its neighbours, solves, and writes back (only) its own part.
+And just as a very wide blur needs either many halo exchanges or a coarse <em>image pyramid</em> (mipmaps), a PDE solver needs either many
+iterations or a coarse grid problem to spread information across the whole domain.</p>
+</div>
+
+<h2 id="schwarz1870">Schwarz's alternating method (1870)</h2>
+<p>Domain decomposition is older than computers. In 1870 Hermann Amandus Schwarz wanted to prove that the Laplace equation $\Delta u = 0$ with given
+boundary values has a solution on complicated domains. For a disc the solution is known explicitly (Poisson's integral formula) and for a rectangle
+too (Fourier series). For the union of a disc and a rectangle (figure) Schwarz proposed to alternate between the two simple shapes:</p>
+
+<figure class="diagram">
+<svg viewBox="0 0 460 230" role="img" aria-label="Overlapping disc and rectangle">
+  <rect class="d2" x="170" y="70" width="260" height="110"/>
+  <circle class="d1" cx="150" cy="120" r="95"/>
+  <!-- Γ1 = arc of the circle inside the rectangle; Γ2 = part of the rectangle boundary inside the disc -->
+  <path class="g1" d="M 230.78 70 A 95 95 0 0 1 223.65 180" />
+  <path class="g2" d="M 230.78 70 L 170 70 L 170 180 L 223.65 180" />
+  <text class="c1" x="75" y="125">Ω₁ (disc)</text>
+  <text class="c2" x="320" y="130">Ω₂ (rectangle)</text>
+  <text class="c1" x="250" y="100">Γ₁ = ∂Ω₁ ∩ Ω₂</text>
+  <text class="c2" x="250" y="202">Γ₂ = ∂Ω₂ ∩ Ω₁</text>
+</svg>
+<figcaption>Schwarz's original configuration: the domain $\Omega = \Omega_1\cup\Omega_2$ is the union of a disc and an overlapping rectangle. The
+artificial boundaries are $\Gamma_1$ (the arc of the circle inside the rectangle) and $\Gamma_2$ (the part of the rectangle's boundary inside the disc).</figcaption>
+</figure>
+
+<div class="box def">
+<p><b>Alternating Schwarz method.</b> Start with a guess $u_2^0$. For $n = 1, 2, \dots$</p>
+$$\begin{aligned}
+&\text{solve on } \Omega_1:& -\Delta u_1^n &= f \text{ in } \Omega_1, & u_1^n &= g \text{ on } \partial\Omega_1\cap\partial\Omega, & u_1^n &= u_2^{n-1} \text{ on } \Gamma_1,\\
+&\text{solve on } \Omega_2:& -\Delta u_2^n &= f \text{ in } \Omega_2, & u_2^n &= g \text{ on } \partial\Omega_2\cap\partial\Omega, & u_2^n &= u_1^{n} \text{ on } \Gamma_2.
+\end{aligned}$$
+<p>Each subproblem takes its missing boundary values on the artificial boundary from the latest solution of the other subdomain.</p>
+</div>
+
+<p><b>Why does it converge?</b> Look at the simplest case: $-u'' = f$ on $(0,1)$ with $\Omega_1 = (0,\beta)$ and $\Omega_2 = (\alpha,1)$, $\alpha&lt;\beta$.
+The errors $e_i^n = u - u_i^n$ satisfy the same iteration with $f = 0$ and zero boundary values at $x=0$ and $x=1$, so they solve $-e'' = 0$:
+they are <em>straight lines</em>. Let $E = e_2^{n-1}(\beta)$ be the error that $u_1^n$ receives at $x = \beta$.</p>
+<ol>
+<li>$e_1^n$ is the line through $(0, 0)$ and $(\beta, E)$, so at $x = \alpha$ it equals $e_1^n(\alpha) = \frac{\alpha}{\beta}E$.</li>
+<li>$e_2^n$ is the line through $(\alpha, \frac{\alpha}{\beta}E)$ and $(1, 0)$, so at $x = \beta$ it equals $e_2^n(\beta) = \frac{\alpha}{\beta}\cdot\frac{1-\beta}{1-\alpha}\,E$.</li>
+</ol>
+<p>Every full iteration multiplies the error by</p>
+$$\rho = \frac{\alpha\,(1-\beta)}{\beta\,(1-\alpha)} \;&lt;\; 1 .$$
+<p>The convergence factor depends only on the geometry. With a wide overlap ($\alpha$ small, $\beta$ large) $\rho$ is small. As the overlap shrinks ($\beta\to\alpha$),
+$\rho\to 1$: without overlap the method stalls, because the two subproblems then only pass each other's boundary value back and forth.
+In 2D and 3D the errors are harmonic functions instead of lines, and the maximum principle gives the same qualitative result: a geometric contraction that
+gets worse as the overlap gets thinner.</p>
+
+<figure class="widget" id="w-schwarz1d">
+<figcaption><b>The classic zig-zag.</b> Schwarz's method for $-u'' = f$ on two overlapping intervals; the local problems are solved exactly. Blue: $u_1^n$
+(it takes its right boundary value from the previous orange curve at $\beta$); orange: $u_2^n$ (it takes its left boundary value from the blue curve at $\alpha$).
+The lower plot compares the error at $x=\beta$ with the prediction $\rho^n$. Shrink the overlap and watch $\rho \to 1$.</figcaption>
+</figure>
+
+<h2 id="overlapping">Overlapping Schwarz methods in matrix form</h2>
+<p>On the computer we work with the discrete system $A\mathbf u = \mathbf b$. Cut the unit square into $K_x\times K_y$ boxes $\Omega_k$, then grow every box by
+$\ell$ layers of cells into $\Omega_k'$. Neighbouring subdomains now overlap in strips of width $\delta = 2\ell h$. The unknowns strictly inside $\Omega_k'$ form the local
+problem. Let $R_k$ be the 0/1 matrix that picks them out of a global vector.</p>
+
+<p><b>The local correction.</b> Suppose $\mathbf u^n$ is the current iterate and $\mathbf r = \mathbf b - A\mathbf u^n$ its residual. The exact error $\mathbf e = \mathbf u - \mathbf u^n$
+solves $A\mathbf e = \mathbf r$. We cannot afford that, so we look for the best correction that lives only in subdomain $k$: $\mathbf e \approx R_k^T\mathbf v$, a vector
+that is zero outside $\Omega_k'$. We ask that the residual equations hold <em>at the unknowns of subdomain $k$</em>: $R_k A R_k^T \mathbf v = R_k\mathbf r$. Hence</p>
+$$\mathbf u^{n+1} = \mathbf u^n + R_k^T A_k^{-1} R_k(\mathbf b - A\mathbf u^n), \qquad A_k = R_k A R_k^T .$$
+<p>$A_k$ consists of the rows and columns of $A$ that belong to $\Omega_k'$. It is precisely the finite element matrix of the Poisson problem on $\Omega_k'$ with
+<span class="term" data-g="dirichlet">Dirichlet</span> conditions on $\partial\Omega_k'$, and the vertices on $\partial\Omega_k'$ keep their current values. So this one line
+<em>is</em> Schwarz's subdomain solve: "solve on $\Omega_k'$ with boundary data taken from the current global iterate". (In the energy inner product,
+$P_k = R_k^T A_k^{-1}R_kA$ is the orthogonal projection onto the functions supported in $\Omega_k'$. The local correction is the best one possible in that subspace.)</p>
+
+<p>There are two ways to combine the $K$ local corrections:</p>
+<div class="box def">
+<p><b>Multiplicative Schwarz</b> (sequential, like Gauss–Seidel): for $k = 1, \dots, K$ in turn, $\;\mathbf u \leftarrow \mathbf u + R_k^T A_k^{-1}R_k(\mathbf b - A\mathbf u)$.
+Each subdomain uses the newest values of the subdomains before it. With $K = 2$ this is Schwarz's alternating method.</p>
+<p><b>Additive Schwarz</b> (simultaneous, like Jacobi): all subdomains use the same residual and their corrections are added,</p>
+$$M_{\rm ASM}^{-1} = \sum_{k=1}^{K} R_k^T A_k^{-1} R_k, \qquad \mathbf u \leftarrow \mathbf u + M_{\rm ASM}^{-1}(\mathbf b - A\mathbf u).$$
+</div>
+<p>The analogy is exact, not only a metaphor. If every "subdomain" is a single unknown, without overlap, then $R_k = \mathbf e_k^T$, $A_k = a_{kk}$, and
+$M_{\rm ASM}^{-1} = \mathrm{diag}(A)^{-1}$ is the Jacobi method, while the multiplicative sweep is Gauss–Seidel. Schwarz methods are block versions of these,
+with large, overlapping blocks.</p>
+<p>The additive version is the parallel one: all $A_k^{-1}$ are applied at the same time, and only the overlap values must be exchanged. But used as a plain
+iteration it usually <b>diverges</b>. Unknowns in an overlap receive corrections from two (or four) subdomains, and the sum overshoots. The tests check
+this for $2\times2$ subdomains. Its real use is as a <em>preconditioner</em> for a Krylov method (next section).</p>
+<p><b>Restricted additive Schwarz (RAS)</b> (Cai &amp; Sarkis, 1999) avoids the double counting. Every subdomain solves on its overlapping region but writes back only the
+values it <em>owns</em>:</p>
+$$M_{\rm RAS}^{-1} = \sum_{k=1}^{K} R_k^T D_k A_k^{-1} R_k, \qquad \textstyle\sum_k R_k^T D_k R_k = I .$$
+<p>This is the halo pattern of the analogy box: read the halo, write only your tile. It also saves communication, because no overlap values are sent back. The price: $M_{\rm RAS}^{-1}$ is not symmetric,
+so it is combined with GMRES instead of CG.</p>
+
+<figure class="widget" id="w-schwarz2d">
+<figcaption><b>Schwarz methods on the unit square</b> ($N = 32$, P1 elements, $u = 0$ on $\partial\Omega$). Left: the boxes (solid cut lines) and the overlapping
+subdomains $\Omega_k'$ (coloured, dashed outlines); dots mark the coarse grid nodes when the coarse space is on. Middle: the $n$-th iterate $u^{(n)}$ (starting from
+$u^{(0)} = 0$) or its error $u_h - u^{(n)}$, on a logarithmic colour scale spanning 8 decades (black = zero or tiny) or signed. Bottom: the residual history.
+With the corner source, a one-level additive method and the iterate view, watch the front: after $n$ iterations, subdomains more than $n$ boxes away are still
+exactly zero. Switch on the coarse space and the whole square lights up after the first iteration.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Multiplicative Schwarz with $3\times3$ subdomains: count the sweeps. Then increase the overlap $\ell$ from 1 to 4. Larger overlap means fewer iterations
+(each local solve is more expensive, though).</li>
+<li>Additive Schwarz + CG with $6\times6$ subdomains, one-level versus two-level. With the corner source, follow the error "front" from subdomain to subdomain.</li>
+<li>Set $K_y = 1$ (vertical strips). The Q1 coarse space then has <em>no</em> functions ($n_c = 0$): the coarse grid has no interior node. The readout shows it.</li>
+</ul>
+</div>
+
+<h2 id="krylov">Schwarz methods as preconditioners</h2>
+<p>Recall that CG converges in about $\sqrt{\kappa}$ iterations, with $\kappa$ the ratio of the largest to smallest eigenvalue. Preconditioned CG runs the same
+algorithm on $M^{-1}A$. It needs $M^{-1}$ to be <span class="term" data-g="spd">symmetric positive definite</span>, which $M_{\rm ASM}^{-1}$ is (each term
+$R_k^TA_k^{-1}R_k$ is symmetric positive semi-definite, and together they cover every unknown; checked numerically in the tests). One application of $M_{\rm ASM}^{-1}$
+is one round of independent local solves, i.e. one parallel step. How many such steps are needed? The classical estimates (Dryja &amp; Widlund; see
+Toselli &amp; Widlund) for the Poisson problem with subdomains of diameter $H$ and overlap $\delta$ are</p>
+$$\begin{aligned}
+\kappa\big(M_{\rm ASM}^{-1}A\big) &\;\le\; C\Big(1 + \frac{1}{H\delta}\Big) &&\text{(one-level)},\\
+\kappa\big(M_{\rm ASM,2}^{-1}A\big) &\;\le\; C\Big(1 + \frac{H}{\delta}\Big) &&\text{(two-level, with a coarse space)},
+\end{aligned}$$
+<p>with $C$ independent of $h$, $H$ and $\delta$ (the domain has diameter 1). Read them carefully:</p>
+<ul>
+<li>Both bounds are independent of the mesh size $h$ when $\delta$ is a fixed fraction of $H$ ("generous overlap"). That is the first success: the
+$h^{-2}$ growth of $\kappa(A)$ has disappeared.</li>
+<li>The one-level bound grows when the subdomains get smaller. With $\delta \sim H$ it is $\sim 1/H^2$, i.e. proportional to the number of subdomains $K$ in 2D.
+Using more processors makes each iteration cheaper but requires <em>more</em> iterations. The method is not <b>scalable</b>.</li>
+<li>With a coarse space the bound depends only on the ratio $H/\delta$. Keep it fixed and the number of iterations stays bounded however many subdomains
+are used.</li>
+</ul>
+
+<h3>Why one-level methods cannot scale</h3>
+<p>Consider the corner source of the widget above and a one-level additive method. One application of $M^{-1}$ updates subdomain $k$ using only the residual
+inside $\Omega_k'$. Information therefore moves by about one subdomain per iteration. After $n$ iterations, subdomains more than $n$ boxes away
+(counting diagonal neighbours) have not "heard" of the source at all: the iterate there is <em>exactly zero</em>. The tests check this for a point load with $5\times5$ subdomains, for ASM+CG
+and RAS+GMRES. But the solution of an elliptic problem is non-zero everywhere: every point feels every source (chapter 1). So at least about $K_x - 1$ iterations
+are necessary, and the count must grow with the number of subdomains. Note that the cause is not a slow local solver; even exact local solves cannot beat
+this bound.</p>
+
+<h3>The coarse space</h3>
+<p>The fix is a small global problem. Put a coarse grid with nodes at the subdomain corners and use its bilinear (Q1) hat functions, interpolated to the fine grid,
+as the columns of $R_0^T$. The two-level preconditioner adds the Galerkin coarse correction</p>
+$$M_{\rm ASM,2}^{-1} = R_0^T A_0^{-1} R_0 + \sum_{k=1}^{K} R_k^T A_k^{-1} R_k, \qquad A_0 = R_0 A R_0^T .$$
+<p>$A_0$ is tiny: one unknown per interior coarse node, $(K_x-1)(K_y-1)$ in total. It couples all subdomains directly, so a source anywhere influences the
+correction everywhere after one iteration (also verified in the tests). Physically, the coarse problem carries the smooth, long-range part of the solution
+that local solves cannot see, and the local solves fix the rough part. This is the same division of labour as in multigrid. The same coarse term can be added to RAS.</p>
+
+<figure class="widget" id="w-scaling">
+<figcaption><b>Scalability experiment</b>, computed live in your browser. <em>Weak scaling</em>: each subdomain keeps $8\times8$ cells and we add subdomains
+($N = 8K$), as one would add processors to solve bigger problems. <em>Strong scaling</em>: the problem ($N = 48$) is fixed and cut into more and more pieces.
+One-level iteration counts (orange) keep growing (in the weak experiment roughly linearly in $K$). Two-level counts (blue) level off. Unpreconditioned CG (grey) grows with $N$ in the weak experiment and is
+constant in the strong one.</figcaption>
+</figure>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Measuring speed by iteration counts only.</b> One-level methods with few subdomains look fine. The trouble appears at hundreds or thousands of subdomains,
+exactly where parallel computers live. Always run a weak-scaling test.</li>
+<li><b>Overlap is not free.</b> Larger $\delta$ means fewer iterations, but bigger local problems and more data to exchange. Production codes use small overlaps
+(a few cells) and rely on the coarse space.</li>
+<li><b>A coarse space that misses the physics.</b> For coefficients that jump by orders of magnitude (e.g. porous media), piecewise bilinear coarse
+functions are not enough: the coarse space must contain the "almost-null" modes of the operator. This is an active research topic (spectral coarse spaces such as GenEO).</li>
+</ul>
+</div>
+
+<h2 id="schur">Non-overlapping methods: the interface problem</h2>
+<p>Now cut the domain <em>without</em> overlap. The unknowns split into the interiors $I_1,\dots,I_K$ of the boxes and the interface $\Gamma$ (the vertices on the
+cut lines). Two interior unknowns of <em>different</em> subdomains are never neighbours in the mesh, so the matrix entry between them is zero. Number the interiors first
+and the interface last, and the matrix takes a block "arrow" shape:</p>
+$$\begin{pmatrix}
+A_{I_1I_1} & & & A_{I_1\Gamma}\\
+ & \ddots & & \vdots\\
+ & & A_{I_KI_K} & A_{I_K\Gamma}\\
+A_{\Gamma I_1} & \cdots & A_{\Gamma I_K} & A_{\Gamma\Gamma}
+\end{pmatrix}
+\begin{pmatrix}\mathbf u_{I_1}\\ \vdots\\ \mathbf u_{I_K}\\ \mathbf u_\Gamma\end{pmatrix}
+= \begin{pmatrix}\mathbf b_{I_1}\\ \vdots\\ \mathbf b_{I_K}\\ \mathbf b_\Gamma\end{pmatrix}.$$
+<p>Solve each block row $k$ for the interior: $\mathbf u_{I_k} = A_{I_kI_k}^{-1}(\mathbf b_{I_k} - A_{I_k\Gamma}\mathbf u_\Gamma)$. Insert this into the last row and collect the
+terms with $\mathbf u_\Gamma$. This gives the <b>interface problem</b></p>
+<div class="box def">
+$$S\,\mathbf u_\Gamma = \mathbf g, \qquad\text{where}\qquad
+\begin{aligned}
+S &= A_{\Gamma\Gamma} - \sum_{k=1}^{K} A_{\Gamma I_k}A_{I_kI_k}^{-1}A_{I_k\Gamma},\\
+\mathbf g &= \mathbf b_\Gamma - \sum_{k=1}^{K} A_{\Gamma I_k}A_{I_kI_k}^{-1}\mathbf b_{I_k}.
+\end{aligned}$$
+<p>$S$ is the <span class="term" data-g="schur">Schur complement</span> of the interiors. Once $\mathbf u_\Gamma$ is known, the interiors follow from $K$
+independent Dirichlet solves.</p>
+</div>
+<p>This is the <span class="term" data-g="condensation">static condensation</span> of chapter 9, with the elements there replaced by whole subdomains here.
+Hybridization eliminated the element interiors and kept a global problem for the multipliers on the mesh skeleton. Here we eliminate the subdomain
+interiors and keep a global problem on the subdomain skeleton $\Gamma$. Mechanical engineers call this <em>substructuring</em>.
+$S$ inherits symmetry and positive definiteness from $A$. It is <em>dense</em> (every interface unknown of a subdomain talks to every other one through the interior),
+so in practice it is never formed. CG only needs products $S\mathbf x$, and each one costs one Dirichlet solve per subdomain, all in parallel.</p>
+
+<h3>What $S$ means: the Dirichlet-to-Neumann map</h3>
+<p>Take interface values $\lambda$ and compute $S\lambda$ step by step. (1) Extend $\lambda$ into every subdomain by solving $-\Delta u_k = 0$ with $u_k = \lambda$ on $\Gamma$
+(this is $-A_{I_kI_k}^{-1}A_{I_k\Gamma}\lambda$). (2) Evaluate the residual of the interface equations, $A_{\Gamma\Gamma}\lambda + \sum_k A_{\Gamma I_k}\mathbf u_{I_k}$.
+By the integration by parts that produced the weak form (chapter 2), the residual on $\Gamma$ of a discrete harmonic function is its (weak) <em>normal flux</em>
+$\int_\Gamma \partial_{n} u\,\varphi_i\,\mathrm ds$. So $S$ maps Dirichlet data on $\Gamma$ to the sum of the Neumann data (fluxes) of the subdomains. In the continuous
+setting this is the <b>Steklov–Poincaré operator</b>. Splitting $A = \sum_k A^{(k)}$ into contributions from the elements of each subdomain gives
+$S = \sum_k R_{\Gamma_k}^TS^{(k)}R_{\Gamma_k}$, where $S^{(k)}$ is the Dirichlet-to-Neumann map of subdomain $k$ alone (tested). The interface equation $S\mathbf u_\Gamma = \mathbf g$
+says <em>the fluxes from both sides balance</em>: what leaves one subdomain enters its neighbour. It is a conservation law (chapter 1) on the interface.</p>
+
+<p><b>Why $S$ is better conditioned than $A$.</b> Put a wave $\cos(k y)$ on a straight interface. Its harmonic extension into a half-plane is
+$e^{-|k|x}\cos(ky)$, with normal derivative $|k|\cos(ky)$: the Dirichlet-to-Neumann map multiplies mode $k$ by $|k|$, while the Laplacian multiplies it by $k^2$.
+On a mesh the frequencies range from $k\sim 1$ to $k \sim 1/h$, so</p>
+$$\kappa(A) \sim h^{-2}, \qquad \kappa(S) \sim h^{-1}.$$
+<p>The widget computes both. For our matrix $\kappa(A) = \cot^2(\pi h/2)$ exactly (it is the 5-point stencil, whose eigenvalues are known), the largest
+eigenvalue of $S$ stays bounded and the smallest one is proportional to $h$.</p>
+
+<figure class="widget" id="w-schur">
+<figcaption><b>Schur complement.</b> Left: interior unknowns coloured by subdomain, interface unknowns as rings. Middle: the sparsity pattern of $A$ after
+reordering the unknowns to $[I_1,\dots,I_K,\Gamma]$ (dashed lines separate the blocks). Note the empty off-diagonal interior blocks and the "arrow" of the
+interface rows and columns. Right: the Schur complement $S$ is a much smaller matrix, but almost full. Bottom: $\kappa(A)$ and $\kappa(S)$ for $N = 8, 16, 32, 64$
+(Lanczos for $A$, all eigenvalues for $S$), with fitted exponents. For $3\times3$ subdomains the readout shows that the local Schur complement of the centre
+subdomain annihilates constants.</figcaption>
+</figure>
+
+<h2 id="dn">The Dirichlet–Neumann method</h2>
+<p>For two subdomains, the transmission conditions on $\Gamma$ are: the values agree ($u_1 = u_2$) and the fluxes balance ($\partial_{n_1}u_1 + \partial_{n_2}u_2 = 0$,
+with outward normals $n_1 = -n_2$). The <b>Dirichlet–Neumann</b> method gives one condition to each subdomain:</p>
+<div class="box def">
+<ol>
+<li><b>Dirichlet solve in $\Omega_1$:</b> $-\Delta u_1 = f$ in $\Omega_1$, $u_1 = \lambda^n$ on $\Gamma$.</li>
+<li><b>Neumann solve in $\Omega_2$:</b> $-\Delta u_2 = f$ in $\Omega_2$, $\partial_{n_2}u_2 = -\partial_{n_1}u_1$ on $\Gamma$ (receive the flux computed in step 1).</li>
+<li><b>Relaxation:</b> $\lambda^{n+1} = \theta\, u_2|_\Gamma + (1-\theta)\,\lambda^n$, with $0 &lt; \theta \le 1$.</li>
+</ol>
+</div>
+<p>In matrix form, step 1 computes $\mathbf u_{I_1}$ from $\lambda^n$, and step 2 solves the local <span class="term" data-g="neumann">Neumann</span> matrix
+$A^{(2)}$ of $\Omega_2$ with the interface residual of $\Omega_1$ as right-hand side. Eliminating the interiors as above (do it once on paper!) shows that
+$S_2\,\mathbf u_\Gamma^{(2)} = \mathbf g - S_1\lambda^n$, so</p>
+$$\lambda^{n+1} = \lambda^n + \theta\,S_2^{-1}\big(\mathbf g - S\lambda^n\big), \qquad S = S_1 + S_2 .$$
+<p>This is a preconditioned Richardson iteration for the interface problem, with the preconditioner $S_2^{-1}$, a Neumann solve. The error is multiplied by
+$I - \theta S_2^{-1}S = I - \theta(I + S_2^{-1}S_1)$. If $\mu$ runs through the eigenvalues of $S_2^{-1}S_1$ (real and positive), the contraction factor is</p>
+$$\rho(\theta) = \max_\mu\,\big|1 - \theta(1+\mu)\big|, \qquad \text{smallest for}\quad \theta_{\rm opt} = \frac{2}{2+\mu_{\min}+\mu_{\max}} .$$
+<ul>
+<li><b>Symmetric split</b> (interface in the middle): $S_1 = S_2$, all $\mu = 1$, and $\theta = \tfrac12$ gives the exact interface values after <em>one</em> step (tested).</li>
+<li><b>High frequencies don't see the geometry.</b> A rapidly oscillating interface mode decays within a short distance of $\Gamma$, so both subdomains look like half-planes to it: $\mu\approx1$
+and the factor is $|1-2\theta|$. With $\theta = 1$ (no relaxation) these modes are never damped. For the lowest mode $\sin(\pi y)$ on strips of widths $L_1, L_2$,
+the Dirichlet-to-Neumann maps are $\pi\coth(\pi L_i)$, so $\mu \approx \coth(\pi L_1)/\coth(\pi L_2)$. For $L_1 = \tfrac14$ this is $\approx 1.50$, and the widget computes
+$\mu_{\max} \approx 1.498$. Then $\theta = 1$ even <em>diverges</em> ($\rho = \mu_{\max} > 1$), while $\theta = \tfrac12$ converges with $\rho \approx 0.25$ (all verified in the tests).</li>
+</ul>
+
+<figure class="widget" id="w-dn">
+<figcaption><b>Dirichlet–Neumann iteration</b> for $-\Delta u = f$ ($N = 32$; $f$ has a bump near $(0.2,0.3)$). Left: the current iterate, Dirichlet subdomain on the
+left of the dashed interface, Neumann subdomain on the right. Middle: the interface values $\lambda^n(y)$ approaching the exact trace. Bottom: the error with the
+predicted rate $\rho(\theta)^n$ computed from the eigenvalues of $S_2^{-1}S_1$. Try $\theta = 1$, then move the interface to the right so that the Neumann side becomes
+the smaller one, and press "use θ_opt".</figcaption>
+</figure>
+
+<h2 id="nn-feti">Neumann–Neumann, FETI and BDDC</h2>
+<p>Dirichlet–Neumann treats the subdomains unequally and works best for two of them. With many subdomains, the standard approach is to precondition $S$
+with the local Neumann problems of <em>all</em> subdomains. This is the <b>Neumann–Neumann</b> preconditioner</p>
+$$M_{\rm NN}^{-1} = \sum_{k} R_{\Gamma_k}^T D_k \big(S^{(k)}\big)^{-1} D_k R_{\Gamma_k},$$
+<p>where $D_k$ are weights that form a partition of unity on $\Gamma$ (e.g. $\tfrac12$ on an edge shared by two subdomains). Since $S = \sum_k R_{\Gamma_k}^TS^{(k)}R_{\Gamma_k}$, this
+"sum of inverses of the pieces" is a natural approximation of the inverse of the sum.</p>
+<p><b>Floating subdomains.</b> A subdomain that does not touch the Dirichlet boundary (the centre box of a $3\times3$ partition) has a pure Neumann problem. Its
+solution is only determined up to a constant, and indeed $S^{(k)}\mathbf 1 = 0$: <em>$S^{(k)}$ is singular</em> (tested, and shown in the Schur widget). The
+local problems can then only be solved if the right-hand side has zero mean, i.e. if the net flux into the subdomain balances its sources. Enforcing these
+compatibility conditions for all floating subdomains at once couples them: it is a small global problem. So the coarse space appears <em>by
+necessity</em> in non-overlapping methods:</p>
+<ul>
+<li><b>Balancing Neumann–Neumann</b> (Mandel, 1993) adds a coarse correction built from the constants of each subdomain.</li>
+<li><b>FETI</b> (Finite Element Tearing and Interconnecting; Farhat &amp; Roux, 1991) tears the mesh apart along $\Gamma$, duplicates the interface unknowns and glues them
+back with Lagrange multipliers that enforce continuity (a saddle-point problem as in chapter 9). It then solves the dual problem for the multipliers, which
+physically are the interface fluxes. The null spaces of the floating subdomains give FETI's "natural" coarse problem.</li>
+<li><b>FETI-DP and BDDC</b> (Dohrmann, 2003) keep a few <em>primal</em> constraints continuous, typically the values at subdomain corners and edge averages. These
+form the coarse problem and make every local problem non-singular. The two methods turned out to have the same spectrum, except possibly for the eigenvalues 0 and 1
+(Mandel, Dohrmann &amp; Tezaur, 2005).</li>
+</ul>
+<p>For these methods the theory gives $\kappa \le C\,\big(1 + \log(H/h)\big)^2$. This bound is independent of the number of subdomains, and it grows only
+logarithmically with the number of elements per subdomain. They are the workhorses of large-scale structural mechanics.</p>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>Domain decomposition = local solves on subdomains + an iteration that makes them agree. It is the standard way to parallelise implicit PDE solvers.</li>
+<li>Schwarz (1870): alternate solves on overlapping subdomains. In 1D the error shrinks by $\rho = \alpha(1-\beta)/(\beta(1-\alpha))$ per iteration, and $\rho\to1$ as the overlap vanishes.</li>
+<li>In matrix form a local solve is $\mathbf u \leftarrow \mathbf u + R_k^TA_k^{-1}R_k(\mathbf b - A\mathbf u)$. Multiplicative = block Gauss–Seidel, additive = block Jacobi.
+Additive and restricted additive Schwarz are used as preconditioners for CG and GMRES.</li>
+<li>One-level methods move information one subdomain per iteration: $\kappa \lesssim 1 + 1/(H\delta)$, not scalable. A coarse space gives
+$\kappa \lesssim 1 + H/\delta$: iteration counts stay bounded as subdomains are added.</li>
+<li>Non-overlapping methods condense the subdomain interiors (static condensation, as in hybridization) into the interface problem $S\mathbf u_\Gamma = \mathbf g$. $S$ is a
+Dirichlet-to-Neumann map with $\kappa(S)\sim h^{-1}$ instead of $h^{-2}$.</li>
+<li>Dirichlet–Neumann needs relaxation ($\theta = \tfrac12$ damps all high-frequency interface modes). Neumann–Neumann, FETI and BDDC handle many subdomains. Floating
+subdomains make their local problems singular, and the coarse problem appears naturally.</li>
+</ul>
+<p>Chapter 12 turns to the parallelism <em>inside</em> one processor: GPUs.</p>
+
+<h2 id="references">References</h2>
+<ul>
+<li>H. A. Schwarz, <em>Über einen Grenzübergang durch alternierendes Verfahren</em>, Vierteljahrsschrift der Naturforschenden Gesellschaft in Zürich 15 (1870), 272–286.</li>
+<li>P.-L. Lions, <em>On the Schwarz alternating method I</em>, in: First International Symposium on Domain Decomposition Methods for Partial Differential Equations, SIAM, 1988.</li>
+<li>M. Dryja, O. B. Widlund, <em>An additive variant of the Schwarz alternating method for the case of many subregions</em>, Technical Report 339, Courant Institute, New York University, 1987.</li>
+<li>X.-C. Cai, M. Sarkis, <em>A restricted additive Schwarz preconditioner for general sparse linear systems</em>, SIAM J. Sci. Comput. 21 (1999), 792–797.</li>
+<li>C. Farhat, F.-X. Roux, <em>A method of finite element tearing and interconnecting and its parallel solution algorithm</em>, Int. J. Numer. Methods Eng. 32 (1991), 1205–1227.</li>
+<li>J. Mandel, <em>Balancing domain decomposition</em>, Commun. Numer. Methods Eng. 9 (1993), 233–241.</li>
+<li>C. R. Dohrmann, <em>A preconditioner for substructuring based on constrained energy minimization</em>, SIAM J. Sci. Comput. 25 (2003), 246–258.</li>
+<li>J. Mandel, C. R. Dohrmann, R. Tezaur, <em>An algebraic theory for primal and dual substructuring methods by constraints</em>, Appl. Numer. Math. 54 (2005), 167–193.</li>
+<li>B. F. Smith, P. E. Bjørstad, W. D. Gropp, <em>Domain Decomposition: Parallel Multilevel Methods for Elliptic Partial Differential Equations</em>, Cambridge University Press, 1996.</li>
+<li>A. Quarteroni, A. Valli, <em>Domain Decomposition Methods for Partial Differential Equations</em>, Oxford University Press, 1999.</li>
+<li>A. Toselli, O. Widlund, <em>Domain Decomposition Methods — Algorithms and Theory</em>, Springer, 2005.</li>
+<li>V. Dolean, P. Jolivet, F. Nataf, <em>An Introduction to Domain Decomposition Methods: Algorithms, Theory, and Parallel Implementation</em>, SIAM, 2015.</li>
+</ul>
+
+</main>
+</body>
+</html>
