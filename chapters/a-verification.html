@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Appendix: verification &amp; glossary — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/cha.js"></script>
+<style>
+  dl.glossary-list dt { font: 700 15px var(--font-ui); margin-top: 1rem; }
+  dl.glossary-list dd { margin: .2rem 0 0 1.2rem; }
+</style>
+</head>
+<body data-chapter="A">
+<main class="content">
+
+<h1><span class="chapnum">A</span>Appendix: verification &amp; glossary</h1>
+<p class="subtitle">How we make sure the solvers on this site are right — and a dictionary of every term used.</p>
+
+<p class="lead">"Make no mistakes" is a strong requirement for an educational site: a wrong sign in a numerical flux or a missing Jacobian produces
+pictures that look plausible but teach the wrong thing. Every numerical module in <code>lib/core/</code> is therefore covered by automated tests,
+and every quantitative claim in the text (a convergence rate, a conservation property, an equivalence between two methods) is checked by one.</p>
+
+<h2 id="how">How the code is verified</h2>
+<ol>
+<li><b>Exactness tests.</b> Building blocks are tested against exact mathematical facts: Gauss rules integrate polynomials up to degree $2n-1$ exactly
+(and not $2n$), Legendre and Dubiner bases are orthonormal, differentiation matrices differentiate polynomials exactly, eigenvalue solvers recover
+known spectra (including complex pairs), sparse direct and Krylov solvers reproduce known solutions, Runge–Kutta methods show their design order.</li>
+<li><b>Invariants.</b> Properties that must hold to round-off: conservation of mass in finite volume and DG methods, symmetry of SIPG/Nitsche matrices,
+equivalence of flux reconstruction with $g_{DG}$ and nodal DG, equality of hybridized and mixed solutions, GPU vs CPU agreement, zero row sums of
+stiffness matrices, the divergence theorem in the chapter 0 widget, …</li>
+<li><b>Convergence against manufactured solutions</b> (<span class="term" data-g="mms">MMS</span>): choose an exact solution $u$, compute the data that produces it,
+solve on a sequence of meshes and fit the slope of $\log(\text{error})$ against $\log h$. A test passes if the observed rate lies in
+$[r - 0.2,\ r + 0.3]$ around the theoretical rate $r$. Errors are always measured with high-order quadrature, never only at nodes.</li>
+<li><b>Page self-tests.</b> Each chapter page opened with <code>?selftest=1</code> reports widget errors and the results of built-in sanity checks
+(finite values, conservation, …). A script runs this for every page in headless Chrome.</li>
+</ol>
+<p>The same test files run headless under Deno on every push (GitHub Actions) and in the browser, here:</p>
+
+<figure class="widget" id="w-tests">
+<figcaption><b>The test suite, live.</b> Each row is one test from <code>tests/</code>; the names say what is checked. Long convergence tests solve many problems,
+so the full run takes a while.</figcaption>
+</figure>
+
+<div class="box analogy">
+<span class="box-title">Why rates, not pictures</span>
+<p>A bug rarely makes a solver explode; far more often it costs an order of convergence (slope 1 instead of 2) or a constant factor that is invisible on one
+mesh. Rates against exact solutions are the most sensitive bug detector numerical analysts have — the same reason graphics people compare renderers against
+analytic integrals or reference path tracers instead of eyeballing images.</p>
+</div>
+
+<h2 id="glossary-section">Glossary</h2>
+<div id="glossary"></div>
+
+</main>
+</body>
+</html>

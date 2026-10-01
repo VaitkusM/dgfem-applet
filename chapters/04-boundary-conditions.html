@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>4. Strong vs weak boundary conditions — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch04.js"></script>
+</head>
+<body data-chapter="04">
+<main class="content">
+
+<h1><span class="chapnum">4</span>Strong vs weak boundary conditions</h1>
+<p class="subtitle">Forcing boundary values into the unknowns, or asking the equations to respect them: elimination, penalties, Nitsche's method, and inflow/outflow conditions for transport.</p>
+
+<p class="lead">A PDE has infinitely many solutions until we say what happens at the boundary. In chapter 2 the Dirichlet condition $u = g$
+was <em>essential</em>: built into the function space. That is the <b>strong</b> way. It is simple on a mesh that follows the boundary, but it
+breaks down for discontinuous Galerkin methods, for meshes that do not fit the geometry (chapter 11), for high-order modal bases and for many
+complicated conditions. The <b>weak</b> way imposes the condition through extra terms in the equations — and the boundary term we discarded in
+chapter 2 comes back.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$g$</td><td>Dirichlet data: we want $u = g$ on $\partial\Omega$</td></tr>
+<tr><td>$\partial_n u = \nabla u\cdot\mathbf n$</td><td>outward normal derivative (normal flux of $u$)</td></tr>
+<tr><td>$h_E$</td><td>length of a boundary edge $E$ (the local mesh size at the boundary)</td></tr>
+<tr><td>$\gamma$</td><td>a dimensionless penalty parameter; the penalty weight on edge $E$ is $\gamma/h_E$</td></tr>
+<tr><td>$\langle w, v\rangle_{\partial\Omega}$</td><td>boundary integral $\int_{\partial\Omega} w\,v\dd s$</td></tr>
+<tr><td>$a_h(\cdot,\cdot)$, $\ell_h(\cdot)$</td><td>the modified ("discrete") bilinear and linear forms of a weakly imposed method</td></tr>
+<tr><td>$u^-$, $u^+$</td><td>at a boundary face: the interior value and the (ghost) exterior value</td></tr>
+</table>
+</div>
+
+<h2 id="strong">Strong imposition</h2>
+<p>With nodal (Lagrange) basis functions, the coefficient of a boundary node is the value of $u_h$ there. So we simply <b>set</b>
+$U_j = g(\mathbf x_j)$ for every boundary node $j$ and keep only the equations of interior nodes. Writing the unknowns as interior (I) and
+boundary (B) blocks,</p>
+$$\begin{pmatrix} A_{II} & A_{IB}\\ A_{BI} & A_{BB}\end{pmatrix}\begin{pmatrix}\mathbf U_I\\ \mathbf U_B\end{pmatrix} = \begin{pmatrix}\mathbf b_I\\ \mathbf b_B\end{pmatrix}
+\quad\longrightarrow\quad A_{II}\,\mathbf U_I = \mathbf b_I - A_{IB}\,\mathbf g_B .$$
+<p>The boundary rows are dropped (their test functions do not vanish on $\Gamma_D$), and the known boundary columns move to the right-hand side —
+this <em>lifting</em> keeps $A_{II}$ symmetric positive definite. (A popular shortcut, replacing boundary rows by identity rows, gives the same
+solution but a non-symmetric matrix unless the columns are eliminated too.) This is what chapter 3 did.</p>
+<p>Strong imposition is exact at the nodes and costs nothing — but it needs (i) nodes <em>on</em> the boundary, (ii) basis functions whose coefficients are
+point values, and (iii) a condition that can be written as "unknown = value". DG, unfitted meshes, spline bases and conditions like
+"no flow through a curved wall" violate at least one of these.</p>
+
+<h2 id="penalty">The penalty method</h2>
+<p>The simplest weak alternative: keep all nodes as unknowns, and punish violations of the boundary condition by adding a large spring term:</p>
+$$\int_\Omega\nabla u_h\cdot\nabla v\dd\mathbf x + \sum_{E\subset\partial\Omega}\frac{\gamma}{h_E}\int_E (u_h - g)\,v\dd s = \int_\Omega f v\dd\mathbf x .$$
+<p>It is <b>inconsistent</b>: the exact solution does <em>not</em> satisfy this equation, because the integration by parts produces the boundary term
+$-\int_{\partial\Omega}\partial_n u\,v\dd s$, which is missing here. The penalty method really solves the Robin problem
+$\partial_n u + \frac{\gamma}{h}(u - g) = 0$, i.e. $u - g = -\frac h\gamma\,\partial_n u$ on the boundary: an $O(h/\gamma)$ error in the boundary condition.
+That caps the $L^2$ convergence rate at 1 (for any polynomial degree) unless $\gamma$ grows with refinement — which ruins the condition number.</p>
+
+<h2 id="nitsche">Nitsche's method</h2>
+<p>Nitsche (1971) fixed the inconsistency by keeping the boundary term instead of dropping it. Start from the integration by parts with
+test functions that do <em>not</em> vanish on the boundary — valid for the exact solution:</p>
+$$\int_\Omega\nabla u\cdot\nabla v\dd\mathbf x - \int_{\partial\Omega}\partial_n u\,v\dd s = \int_\Omega f v\dd\mathbf x .$$
+<p>Now add two terms that are <b>zero for the exact solution</b> (because $u - g = 0$ on the boundary), so consistency is preserved:</p>
+<ul>
+<li>a <em>symmetrising</em> term $-\int_{\partial\Omega}\partial_n v\,(u - g)\dd s$, which makes the bilinear form symmetric;</li>
+<li>a <em>penalty</em> term $+\sum_E\frac{\gamma}{h_E}\int_E (u - g)\,v\dd s$, which makes it positive.</li>
+</ul>
+<div class="box def">
+<p><b>Symmetric Nitsche:</b> find $u_h\in V_h$ (no boundary constraint!) with $a_h(u_h, v) = \ell_h(v)$ for all $v\in V_h$, where</p>
+$$\begin{aligned}
+a_h(u,v) &= \int_\Omega\nabla u\cdot\nabla v\dd\mathbf x - \int_{\partial\Omega}\partial_n u\,v\dd s - \int_{\partial\Omega}\partial_n v\,u\dd s + \sum_E\frac{\gamma}{h_E}\int_E u\,v\dd s,\\
+\ell_h(v) &= \int_\Omega f\,v\dd\mathbf x - \int_{\partial\Omega}\partial_n v\,g\dd s + \sum_E\frac{\gamma}{h_E}\int_E g\,v\dd s .
+\end{aligned}$$
+</div>
+<p><b>Consistency</b> means Galerkin orthogonality still holds, so the error is again a best-approximation error: optimal rates $h^{p}$ in $H^1$ and
+$h^{p+1}$ in $L^2$ — unlike the penalty method.</p>
+<p><b>Why must $\gamma$ be large enough?</b> Testing with $v = u_h$:</p>
+$$a_h(v,v) = \|\nabla v\|^2_{L^2(\Omega)} - 2\int_{\partial\Omega}\partial_n v\,v\dd s + \sum_E\frac{\gamma}{h_E}\|v\|^2_{L^2(E)} .$$
+<p>The middle term has no sign. For polynomials there is an <em>inverse trace inequality</em> $h_E\|\partial_n v\|^2_{L^2(E)}\le C_I\|\nabla v\|^2_{L^2(K)}$
+(a polynomial cannot have a large normal derivative on an edge without having a large gradient inside the element; $C_I$ grows like $p^2$ and
+depends on the element shape, not on $h$). With Young's inequality $2ab \le \varepsilon a^2 + b^2/\varepsilon$ one gets
+$a_h(v,v) \ge \tfrac12\|\nabla v\|^2 + \sum_E\frac{\gamma - 2C_I}{h_E}\|v\|_E^2$: the method is <b>coercive</b> (stable) as soon as $\gamma > 2C_I$,
+a fixed number independent of $h$. Below that threshold the matrix can have negative eigenvalues — demonstrated below.</p>
+<p><b>Non-symmetric Nitsche</b> flips the sign of the symmetrising term ($+\int\partial_n v\,u$, and $+\int\partial_n v\,g$ on the right). Then the two
+boundary terms cancel in $a_h(v,v)$ and the method is coercive for any $\gamma\ge0$ (Burman 2012 even shows $\gamma = 0$ works). The price is a
+non-symmetric matrix and the loss of adjoint consistency, which can reduce the $L^2$ rate.</p>
+<div class="box analogy">
+<span class="box-title">Big picture</span>
+<p>Nitsche's method is the template for <em>all</em> weakly coupled methods in this course: applied on every interior face it becomes the symmetric interior
+penalty DG method (chapter 8); applied on a boundary that cuts through elements it becomes CutFEM (chapter 11); applied on a shifted boundary it
+becomes the shifted boundary method (chapter 11). It can also be derived as a stabilised Lagrange-multiplier method (Stenberg 1995), which links it
+to the hybridization ideas of chapter 9.</p>
+</div>
+
+<figure class="widget" id="w-bc2d">
+<figcaption><b>Four ways to impose $u = g$</b> for the Poisson problem with $u = \cos(\pi x)e^y$. Right: the mismatch $u_h - g$ along the boundary, unrolled
+counter-clockwise (vertical lines = corners). Strong imposition is exact at the boundary <em>nodes</em> (P1: the mismatch is the interpolation error of $g$ between
+nodes, the "scallops"); Nitsche's mismatch is of the same size but not zero at the nodes, and it shrinks at the optimal rate; the penalty method's mismatch is larger and converges slowly. "Convergence study"
+computes $N = 4\dots32$ and fits the rates (green = optimal).</figcaption>
+</figure>
+
+<figure class="widget" id="w-gamma">
+<figcaption><b>The role of $\gamma$.</b> Left: $L^2$ error versus $\gamma$ at a fixed mesh (dashed: strong imposition). Right: the smallest eigenvalue of the
+symmetric part of the matrix — negative means the method is not stable. Symmetric Nitsche needs $\gamma$ above a threshold (on these meshes about 2 for P1
+and about 6 for P2, consistent with $C_I$ growing like $p^2$); below it the error is erratic and spikes whenever an eigenvalue passes through zero. Above the
+threshold the eigenvalue curve is flat: it is then set by the interior of the domain, not by the boundary. The non-symmetric variant is stable for all $\gamma$.
+The penalty method approaches the strong solution only as $\gamma\to\infty$.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Set $\gamma = 1$ with symmetric Nitsche: the read-out reports a negative eigenvalue and the solution is garbage. Raise $\gamma$ until it turns positive.</li>
+<li>Run the convergence study for "penalty only": the $L^2$ rate is about 1 instead of 2 (P1) or 3 (P2).</li>
+<li>Very large $\gamma$ ($10^4$): Nitsche behaves like strong imposition — but the matrix becomes badly conditioned. A moderate $\gamma\approx 10p^2$ is the usual choice.</li>
+</ul>
+</div>
+
+<h2 id="hyperbolic">Boundary conditions for transport</h2>
+<p>For the advection equation $u_t + a u_x = 0$ with $a > 0$ (chapter 1), characteristics enter the domain at $x = 0$ (the <b>inflow</b> boundary) and leave at
+$x = 1$ (the <b>outflow</b> boundary). The solution inside is completely determined by the initial data and the inflow data; prescribing anything at the outflow
+over-determines the problem. In 2D the inflow part of the boundary is where $\mathbf a\cdot\mathbf n &lt; 0$; for the Euler equations, the number of conditions
+equals the number of characteristic speeds pointing into the domain (e.g. a subsonic outflow needs one condition, typically the pressure).</p>
+<p>Finite volume and DG methods impose boundary conditions <b>weakly through the numerical flux</b>: on a boundary face the flux is $\hat F(u^-, u^+)$
+with an exterior <em>ghost state</em> $u^+$. At the inflow $u^+ = g$; at the outflow one may offer any value — an upwind flux simply ignores it, because it only
+uses the upwind (interior) state. This is the hyperbolic analogue of Nitsche's method: the flux decides which data is used. Overwriting boundary cells
+(strong imposition) works at the inflow but produces a wrong boundary value at the outflow.</p>
+
+<figure class="widget" id="w-hyper">
+<figcaption><b>Inflow and outflow.</b> A bump travels to the right while a pulse enters through the inflow boundary (grey = exact solution, bars = first-order FV with
+100 cells). With the upwind flux, weakly offered outflow data has <em>no effect at all</em> (bit-for-bit identical results — tested). Strongly overwriting the last
+cell creates a wrong value there. With the central flux, wrong outflow data travels back <em>into</em> the domain: central fluxes do not respect the direction of
+information flow.</figcaption>
+</figure>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li>Symmetric Nitsche with too small $\gamma$ — or with $\gamma$ not scaled by $1/h_E$ — is unstable. The safe threshold grows like $p^2$ and with element distortion.</li>
+<li>The penalty method converges, but to the wrong boundary condition at a rate limited to $O(h)$.</li>
+<li>Prescribing data at an outflow boundary of a hyperbolic problem is an ill-posed over-specification; in practice it shows up as spurious boundary layers or reflections.</li>
+</ul>
+</div>
+
+<h2 id="summary">Summary</h2>
+<table class="data text">
+<tr><th>method</th><th>consistent</th><th>symmetric</th><th>stable for</th><th>notes</th></tr>
+<tr><td>strong (elimination)</td><td>yes</td><td>yes</td><td>always</td><td>needs boundary nodes and nodal basis</td></tr>
+<tr><td>penalty</td><td>no</td><td>yes</td><td>$\gamma > 0$</td><td>$L^2$ rate capped at 1</td></tr>
+<tr><td>symmetric Nitsche</td><td>yes</td><td>yes</td><td>$\gamma > 2C_I \sim p^2$</td><td>optimal rates; template for SIPG, CutFEM</td></tr>
+<tr><td>non-symmetric Nitsche</td><td>yes</td><td>no</td><td>$\gamma \ge 0$</td><td>robust; may lose $L^2$ optimality</td></tr>
+<tr><td>numerical flux (FV/DG)</td><td>yes</td><td>—</td><td>upwind flux</td><td>only inflow data is used</td></tr>
+</table>
+
+<h2 id="references">References</h2>
+<ul>
+<li>J. Nitsche, Über ein Variationsprinzip zur Lösung von Dirichlet-Problemen bei Verwendung von Teilräumen, die keinen Randbedingungen unterworfen sind,
+<em>Abh. Math. Sem. Univ. Hamburg</em> 36 (1971).</li>
+<li>I. Babuška, The finite element method with penalty, <em>Math. Comp.</em> 27 (1973).</li>
+<li>R. Stenberg, On some techniques for approximating boundary conditions in the finite element method, <em>J. Comput. Appl. Math.</em> 63 (1995).</li>
+<li>M. Juntunen, R. Stenberg, Nitsche's method for general boundary conditions, <em>Math. Comp.</em> 78 (2009).</li>
+<li>E. Burman, A penalty-free nonsymmetric Nitsche-type method for the weak imposition of boundary conditions, <em>SIAM J. Numer. Anal.</em> 50 (2012).</li>
+</ul>
+
+</main>
+</body>
+</html>
