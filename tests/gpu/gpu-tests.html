@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>GPU tests — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../../css/style.css">
+<style> main { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; font-family: var(--font-ui); } pre { white-space: pre-wrap; } </style>
+</head>
+<body>
+<main>
+<h1>GPU tests (chapter 12)</h1>
+<p>Runs only <code>tests/gpu/*.test.js</code> (WebGPU vs CPU twin). The full suite, including these, is at <a href="../test.html">tests/test.html</a>.</p>
+<pre id="log">running…</pre>
+<pre id="summary" hidden></pre>
+</main>
+<script type="module">
+import { registry } from '../harness.js';
+import { GPU_TEST_LOG } from './dgadv-gpu.test.js';
+const log = document.getElementById('log');
+const summary = { passed: 0, failed: 0, failures: [], webgpu: !!navigator.gpu, log: GPU_TEST_LOG };
+for (const t of registry) {
+  try { await t.fn(); summary.passed++; } catch (e) { summary.failed++; summary.failures.push(`${t.name}: ${e.message}`); }
+}
+log.textContent = GPU_TEST_LOG.join('\n');
+const pre = document.getElementById('summary');
+pre.textContent = JSON.stringify(summary); pre.hidden = false;
+</script>
+</body>
+</html>

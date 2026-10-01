@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>12. Parallelisation on GPUs — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch12.js"></script>
+<style>
+  pre.code { font: 12.5px/1.45 var(--font-mono); background: var(--bg-sunk); border: 1px solid var(--rule); border-radius: 6px;
+    padding: .6rem .8rem; overflow-x: auto; white-space: pre; }
+  pre.code .c { color: var(--ink-faint); }
+  .gpu-status { font: 13px/1.5 var(--font-ui); padding: .45rem .7rem; border-radius: 6px; margin: .3rem 0 .6rem; background: var(--bg-sunk); border-left: 4px solid var(--ink-faint); }
+  .gpu-status.ok { border-left-color: var(--accent-3); }
+  .gpu-status.bad { border-left-color: var(--accent-2); }
+  table.data.compact td, table.data.compact th { padding: .15rem .5rem; font-size: 13px; }
+  table.data.kernels td, table.data.kernels th { text-align: left; }
+</style>
+</head>
+<body data-chapter="12">
+<main class="content">
+
+<h1><span class="chapnum">12</span>Parallelisation on GPUs</h1>
+<p class="subtitle">Why explicit DG is a natural fit for graphics hardware: thousands of threads, element-local work, race-free face fluxes — and a live WebGPU solver you can run in this page.</p>
+
+<p class="lead">A graphics card shades millions of pixels per frame by running the <em>same small program</em> on every pixel at once.
+A DG solver for a conservation law does something remarkably similar: at every time step it runs the same small computation
+on every node of every element, and elements talk to each other only through their faces. In this chapter we take a 2D DG
+advection solver (the method of <a href="06-dg.html">chapter 6</a>) apart into GPU <em>kernels</em>, look at what makes such kernels fast or slow
+(memory traffic, not arithmetic!), meet the classic pitfall of parallel assembly — the race condition — and finally run the
+solver on <em>your</em> GPU through WebGPU, checked number-by-number against a CPU twin.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$N$, $h = 1/N$</td><td>elements per direction of the periodic $N\times N$ grid on the unit square; element side length</td></tr>
+<tr><td>$p$, $n = p+1$, $N_p = n^2$</td><td>polynomial degree; nodes per direction; nodes (= DOFs) per element</td></tr>
+<tr><td>$e = e_y N + e_x$</td><td>element index ($e_x$ = column, $e_y$ = row)</td></tr>
+<tr><td>$g = e\,N_p + j\,n + i$</td><td>global DOF index of node $(i, j)$ of element $e$ ($i$ counts in $x$, $j$ in $y$)</td></tr>
+<tr><td>$\xi_0,\dots,\xi_p$; $w_0,\dots,w_p$</td><td><span class="term" data-g="gll">GLL nodes</span> and weights on $[-1,1]$; $D_{ik} = \ell_k'(\xi_i)$ the differentiation matrix</td></tr>
+<tr><td>thread / invocation</td><td>one execution of a kernel (a GPU program) with its own index $g$</td></tr>
+<tr><td>$W$</td><td>warp / subgroup width: threads executing in lockstep (32 on most GPUs, 64 on some AMD GPUs)</td></tr>
+<tr><td><span class="term" data-g="workgroup">workgroup</span></td><td>a block of threads (we use 64) scheduled together on one compute unit</td></tr>
+<tr><td>$I$ [FLOP/byte]</td><td>arithmetic intensity: floating-point operations per byte moved to/from memory</td></tr>
+<tr><td>$P_\text{peak}$, $B$</td><td>peak compute rate [FLOP/s] and memory bandwidth [byte/s] of a device</td></tr>
+<tr><td>f32, f64</td><td>32-bit (single) and 64-bit (double) floating point; unit round-off $2^{-24}\approx 6\cdot10^{-8}$ and $2^{-53}\approx 1.1\cdot10^{-16}$</td></tr>
+</table>
+</div>
+
+<h2 id="why">Why GPUs? Latency versus throughput</h2>
+<p>A CPU core is built to finish <em>one</em> instruction stream as quickly as possible: deep pipelines, branch prediction,
+out-of-order execution and large caches all fight <b>latency</b>, the time until one result is ready. A GPU makes the opposite bet.
+It has thousands of simple arithmetic lanes and no attempt to make a single thread fast; instead it keeps a huge number of threads
+in flight and, whenever one group stalls on a memory access (hundreds of clock cycles), it switches — at no cost — to another group
+that is ready. The design maximises <b>throughput</b>, the number of results per second, at the price of latency.</p>
+<p>The bet pays off when a problem offers <em>massive, uniform parallelism</em>: the same operation on millions of independent data items.
+Rendering is the original example (one fragment-shader invocation per pixel). Explicit time stepping of a DG or finite volume
+method is another: a mesh with $10^6$ degrees of freedom offers $10^6$ independent node updates per stage. As orders of magnitude,
+a current discrete GPU delivers tens of TFLOP/s (f32) and close to a terabyte per second of memory bandwidth, several times to ten times
+more than a CPU socket — <em>if</em> the algorithm feeds it properly. Most of this chapter is about what "properly" means.</p>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>A <b>compute kernel is a fragment shader without the rasteriser</b>. A fragment shader runs once per pixel, reads textures,
+and writes its own pixel; a compute kernel runs once per index $g = 0, 1, \dots$, reads <em>storage buffers</em> (think: textures
+you can index freely with integers) and writes wherever it wants — which is both more flexible and more dangerous (see
+<a href="#races">races</a>). The <em>uniform buffer</em> holding constants like the time step is exactly the uniform block of a shader.</p>
+</div>
+
+<h2 id="simt">The execution model: threads, warps, workgroups</h2>
+<p>In WebGPU's shading language WGSL, a compute kernel is a function marked <code>@compute</code> and launched ("dispatched") on a grid of
+<span class="term" data-g="workgroup">workgroups</span>. Each workgroup consists of a fixed number of threads (we use
+<code>@workgroup_size(64)</code>), and every thread learns its global index from the built-in <code>global_invocation_id</code>.
+To process $M$ items we launch $\lceil M/64\rceil$ workgroups; the last one may be partially empty, which is why every kernel begins with
+<code>if (g &gt;= M) { return; }</code>.</p>
+<p>Inside the hardware, the threads of a workgroup are executed in bundles of $W$ consecutive threads — <b>warps</b> (NVIDIA), <b>wavefronts</b> (AMD),
+<b>subgroups</b> (WebGPU/Vulkan). All lanes of a warp execute the <em>same instruction</em> at the same time on different data:
+<span class="term" data-g="simt">SIMT</span>, single instruction, multiple threads. This has a striking consequence for <code>if</code> statements.
+When some lanes of a warp take a branch and others do not, the warp executes the branch anyway, with the non-participating lanes
+<em>masked off</em> (idle); then it executes the other branch with the roles reversed. This is called <b>divergence</b>: the warp pays for
+both paths. Branches cost nothing extra only when all $W$ lanes agree.</p>
+
+<figure class="widget" id="w-threads">
+<figcaption><b>Mapping threads to a DG mesh.</b> A $3\times3$ mesh with degree $p$; every dot is a DOF. With <em>one thread per DOF</em>,
+thread $g$ handles DOF $g$ (numbered element by element); colours show workgroups, a lighter and a darker shade the two warps of each workgroup. The lane diagram shows each warp's lanes for the highlighted line of the kernel: active (coloured), masked by a branch (grey ×)
+or empty (beyond the last item). The <em>volume</em> kernel never diverges; the <em>lift</em> kernel does: only DOFs on an element boundary have
+face work. With <em>one thread per element</em> there are only 9 threads, many lanes stay empty (most of them for $W = 32$) and each thread works through its nodes serially.
+Press play to step through the kernel line by line.</figcaption>
+</figure>
+
+<p>Two quantities summarise the picture: the number of threads (parallelism) and the <b>SIMT efficiency</b>, the fraction of issued lane-slots
+that do useful work. One thread per DOF gives $N^2 N_p$ threads; one per element only $N^2$ — on a $64\times64$ mesh that is 4096 threads,
+too few to fill a GPU that wants tens of thousands in flight. That is why our kernels use one thread per DOF (and one per face node for the
+face kernel) and accept a little divergence in the lift kernel.</p>
+
+<h2 id="memory">The memory hierarchy and latency hiding</h2>
+<p>Data lives at several levels, from small and fast to large and slow:</p>
+<ul>
+<li><b>Registers</b>: private to a thread, the fastest storage; a compute unit has a fixed register file shared by all resident threads.</li>
+<li><b>Workgroup (shared) memory</b>: tens of kilobytes per compute unit, shared by the threads of one workgroup, explicitly managed
+(<code>var&lt;workgroup&gt;</code> in WGSL, with <code>workgroupBarrier()</code> to synchronise). A typical use: load an element's values once,
+then let all its threads read them many times.</li>
+<li><b>Caches</b> (L1 per compute unit, L2 shared): automatic, they catch reuse such as neighbouring threads reading the same element.</li>
+<li><b>Global memory</b> (DRAM / HBM on the card): gigabytes, high <em>bandwidth</em> but a latency of hundreds of cycles per access.
+Our storage buffers live here.</li>
+</ul>
+<p>How does a GPU stay busy while a warp waits hundreds of cycles for global memory? By having many other warps <em>resident</em> on the same
+compute unit, ready to run: <b>latency hiding</b> through parallelism. The ratio of resident warps to the hardware maximum is the
+<b>occupancy</b>. It is limited by resources: if each thread needs many registers, or each workgroup much shared memory, fewer warps fit,
+and latency is exposed. This is a recurring trade-off — a "smarter" kernel that keeps more in registers can be slower because it lowers occupancy.</p>
+
+<h2 id="roofline">Bandwidth versus FLOPs: the roofline model</h2>
+<p>Every kernel moves data and computes on it. Let a kernel perform $F$ floating-point operations and move $Q$ bytes between global
+memory and the chip. Its <b>arithmetic intensity</b> is $I = F/Q$ [FLOP/byte]. A device can do at most $P_\text{peak}$ FLOP/s and move at most
+$B$ byte/s, so the time is at least $\max(F/P_\text{peak},\, Q/B)$ and the attainable rate is</p>
+$$P \;\le\; \min\big(P_\text{peak},\; B\cdot I\big).$$
+<p>Plotted on log–log axes this is the <span class="term" data-g="roofline">roofline</span>: a slanted line $B\cdot I$ (memory-bound) meeting a flat roof
+$P_\text{peak}$ (compute-bound) at the <b>ridge point</b> $I^* = P_\text{peak}/B$. For a generic modern GPU with 30 TFLOP/s and 800 GB/s,
+$I^* \approx 37$ FLOP/byte: a kernel must do 37 operations for every byte it touches to be limited by arithmetic.</p>
+<p>Our kernels are far from that. The Runge–Kutta update $k \leftarrow A k + \Delta t\, r$, $u \leftarrow u + Bk$ does 5 FLOPs per DOF
+while reading three f32 values and writing two (20 bytes): $I = 0.25$. Even the volume kernel, which does $4n + 5$ FLOPs per DOF
+(two 1D derivatives of $n$ multiply–adds each) for 8 bytes, has $I \approx 2.6$ at $p=3$. Summed over one RK stage of four kernels
+we get about $0.68$ FLOP/byte at $p=3$. <b>Explicit DG on a GPU is memory-bound</b>: its speed is set by bytes, not FLOPs, so optimisations
+should reduce memory traffic.</p>
+
+<figure class="widget" id="w-roofline">
+<figcaption><b>Roofline of the DG kernels.</b> Attainable GFLOP/s versus arithmetic intensity for a device whose peak rate and bandwidth you can edit
+(presets are generic orders of magnitude, not specific products). Dots: the four kernels of one RK stage and a hypothetical fused kernel, for the selected $p$
+(faint trails: $p = 1\dots8$). Counts are per DOF from <code>lib/gpu/cost.js</code>, assuming f32 and an <em>ideal cache</em> (each array element moved once
+per kernel). Once the live solver below has been benchmarked (automatically for moderate sizes, or with its Benchmark button), its measured throughput appears as a star (converted to GFLOP/s with the same counts).</figcaption>
+</figure>
+
+<h2 id="layout">Memory coalescing: AoS versus SoA</h2>
+<p>Global memory is not read value by value but in aligned <b>segments</b> (typically 32 to 128 bytes). When the $W$ threads of a warp load
+$W$ <em>consecutive</em> f32 values, the hardware merges ("coalesces") the requests into the minimum number of segments — one or a few wide
+transactions. When they load scattered values, each touched segment is transferred in full, and most of the bytes are thrown away.
+Since we are memory-bound, <span class="term" data-g="coalescing">coalescing</span> directly decides speed.</p>
+<p>The data layout is what makes access consecutive. Take a system of PDEs with several fields per node (the Euler equations have four: $\rho$, $\rho u$, $\rho v$, $E$):</p>
+<ul>
+<li><b>Array of structures (AoS)</b>: <code>[ρ₀ ρu₀ ρv₀ E₀ ρ₁ ρu₁ …]</code> — natural in object-oriented CPU code (an array of <code>struct Node</code>).
+When thread $t$ loads $\rho_t$, consecutive threads read addresses $4t$: stride 4, so a warp touches four times as many segments as needed.</li>
+<li><b>Structure of arrays (SoA)</b>: <code>[ρ₀ ρ₁ ρ₂ … | ρu₀ ρu₁ … | …]</code> — one array per field. Thread $t$ reads address $t$: perfectly coalesced.</li>
+</ul>
+<p>The thread mapping matters just as much. Our DOFs are stored element by element ($g = e N_p + jn + i$). With one thread per DOF, consecutive
+threads read consecutive $g$ — coalesced. With one thread per element, thread $e$ reads $u[e N_p + l]$: a stride of $N_p$, uncoalesced.
+(Advanced codes use hybrids such as "AoSoA" blocks, or stage an element's data through workgroup memory.)</p>
+
+<figure class="widget" id="w-layout">
+<figcaption><b>Which addresses does a warp read?</b> Memory is drawn as rows of f32 cells, coloured by field; the outlined blocks are aligned
+segments. The highlighted cells are read by the 8 threads of a (toy) warp when each loads field 0 of its item. Count the segments
+(memory transactions) and compare the bytes transferred with the bytes actually used. Real GPUs have $W = 32$ and 32–128-byte segments;
+the toy uses $W = 8$ and 32-byte (8-value) segments so that everything fits on screen — the ratios are the same.</figcaption>
+</figure>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Vertex buffers face the same choice: <em>interleaved</em> attributes (position, normal, uv per vertex: AoS) versus <em>separate streams</em> (SoA).
+Interleaving wins when one shader invocation reads all attributes of its vertex; separate streams win when consecutive invocations read the same attribute —
+which is the GPU-compute situation.</p>
+</div>
+
+<h2 id="dg-fits">Why DG and FV map well to GPUs — and continuous FEM less so</h2>
+<p>Three properties make explicit DG (and finite volume, its $p = 0$ cousin from <a href="05-finite-volume.html">chapter 5</a>) a near-perfect GPU workload:</p>
+<ol>
+<li><b>Element-local dense work.</b> All volume computations of an element use only that element's $N_p$ values and small dense matrices
+($D$, the reference operators). That is regular, branch-free, cache-friendly arithmetic.</li>
+<li><b>Coupling only through faces.</b> Neighbours interact only via the <span class="term" data-g="numflux">numerical flux</span> on shared faces, which needs
+the traces of two elements — a small, structured amount of data.</li>
+<li><b>Explicit time stepping with a diagonal mass matrix.</b> With collocated GLL quadrature (or an orthonormal modal basis) the
+<span class="term" data-g="massmat">mass matrix</span> is diagonal, so $\mathrm du/\mathrm dt = M^{-1} R(u)$ needs no linear solve: every stage is a
+handful of pointwise and element-local kernels.</li>
+</ol>
+<p>Compare continuous finite elements (<a href="03-cg-fem.html">chapter 3</a>). Their unknowns are shared between elements, so the classic
+<span class="term" data-g="assembly">assembly</span> loop "for each element, compute the local vector and <em>add</em> it into the global vector" makes several
+threads add to the same global entry: a <b>race condition</b> (next section), which must be cured by colouring or atomics. Worse, CG methods for
+elliptic problems lead to large sparse linear systems. Solving them with the <span class="term" data-g="cgsolver">conjugate gradient method</span> requires
+dot products in every iteration — <b>global reductions</b> over all threads, which need several kernel launches or synchronisation across the whole GPU —
+and the best preconditioners (incomplete factorisations, Gauss–Seidel) are inherently sequential. These problems can be solved (matrix-free
+operators, multigrid, polynomial smoothers), but they are research topics, whereas an explicit DG step is parallel out of the box.</p>
+
+<h2 id="races">Race conditions on face fluxes, and two classic cures</h2>
+<p>Suppose each thread handles one face and wants to <em>add</em> its flux contribution to both neighbouring elements, or each CG element-thread
+adds its local vector to the shared vertices. A "<code>+=</code>" on memory is really three steps: <b>load</b> the old value, <b>add</b>, <b>store</b>.
+If two threads load the same old value before either stores, one of the two updates is simply lost — a <b>race condition</b>. The result depends on
+timing, changes from run to run, and is wrong. Two classic remedies avoid any shared write:</p>
+<ol>
+<li><b>Face buffer + gather</b> (what our solver does). A <em>face kernel</em> with one thread per face node computes the numerical flux and writes it
+into a slot of a face buffer that belongs to that face alone. A second kernel, one thread per DOF, <em>gathers</em> (reads) the fluxes of its own element's
+faces and writes only its own value. Every address has exactly one writer. Cost: an extra buffer and an extra kernel launch; each flux is computed once.</li>
+<li><b>Graph colouring.</b> Colour the elements so that two elements sharing a vertex (or face) never have the same colour, then run one kernel launch
+per colour. Within a colour no two threads touch the same entry, so scatter-adds are safe. A structured quad mesh needs 4 colours for vertex sharing
+($2\times2$ pattern); unstructured meshes need more, and each colour is a separate, smaller launch.</li>
+</ol>
+<p>A third option is <b>atomic operations</b>, read–modify–write instructions that the hardware performs indivisibly. WGSL, however, has atomics only
+for 32-bit <em>integers</em> (<code>atomic&lt;i32&gt;</code>, <code>atomic&lt;u32&gt;</code>): there is no floating-point <code>atomicAdd</code>. One can emulate
+it with a compare-and-swap loop on the bit pattern (<code>bitcast</code> + <code>atomicCompareExchangeWeak</code>) or accumulate in fixed-point integers —
+both slow under contention — and even where float atomics exist (CUDA), the order of the additions varies from run to run, so results are no longer
+bitwise reproducible (floating-point addition is not associative).</p>
+
+<figure class="widget" id="w-race">
+<figcaption><b>A race condition, made visible.</b> Every element adds $+1$ to each of its four vertices, so the correct result at a vertex is the number of
+elements sharing it (1, 2 or 4). <em>Naive parallel</em>: all element-threads load, then all store — interior vertices end with 1 instead of 4.
+<em>Colouring</em>: four launches, one per colour; same-coloured elements share no vertex, so nothing is lost. <em>DG face buffer</em>: a face kernel writes
+one value per face into its own slot, then each element gathers its faces (here: net outflow $\sum \pm F_f$) — no shared writes at all. Step through the
+phases with play.</figcaption>
+</figure>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>The face buffer is a <b>G-buffer pass</b>, as in deferred shading: pass 1 writes intermediate per-face results into a dedicated buffer, pass 2 reads
+whatever it needs from it. The <em>ping-pong</em> buffers of our time stepper (read from $u^{(0)}$, write $u^{(1)}$, swap) are the double-buffered
+render targets of every GPU fluid or blur effect — you never sample the texture you are rendering into.</p>
+</div>
+
+<h2 id="algorithm">The solver: DG-SEM advection in four kernels</h2>
+<p>We solve $u_t + \mathbf a\cdot\nabla u = 0$ with constant velocity $\mathbf a = (a_x, a_y)$ on the periodic unit square, with the nodal DG spectral
+element method (DG-SEM): on each square element a tensor-product <span class="term" data-g="nodal">nodal</span> basis of degree $p$ on the
+$(p+1)\times(p+1)$ GLL nodes, with quadrature <em>collocated</em> at the same nodes, so the mass matrix is diagonal,
+$M = \tfrac{h^2}{4}\operatorname{diag}(w_i w_j)$. (This "lumped" GLL mass matrix is not the exact one — GLL with $n$ points integrates exactly only up to degree
+$2p-1$ — but it is the standard, accurate DG-SEM choice.) The <span class="term" data-g="upwind">upwind</span> flux through a face with normal $\mathbf n$ pointing
+from $K^-$ to $K^+$ is</p>
+$$\hat F(u^-, u^+) = \begin{cases} (\mathbf a\cdot\mathbf n)\,u^- & \mathbf a\cdot\mathbf n \ge 0,\\ (\mathbf a\cdot\mathbf n)\,u^+ & \mathbf a\cdot\mathbf n &lt; 0.\end{cases}$$
+<p>Write $u_{ij}$ for the value at node $(\xi_i, \xi_j)$ of an element. Because the GLL differentiation matrix satisfies a discrete integration-by-parts
+(summation-by-parts) identity, the weak form of chapter 6 can be rewritten exactly in <em>strong form</em>:</p>
+$$\begin{aligned}
+\frac{\mathrm d u_{ij}}{\mathrm dt} \;=\; &-\frac{2}{h}\Big(a_x\sum_{k=0}^{p} D_{ik}\,u_{kj} \;+\; a_y\sum_{k=0}^{p} D_{jk}\,u_{ik}\Big) &&\text{(volume kernel)}\\
+&-\frac{2}{h\,w_0}\sum_{\text{faces } f \ni (i,j)} \Big(\hat F_f^{\text{out}} - (\mathbf a\cdot\mathbf n_K)\,u_{ij}\Big) &&\text{(lift kernel)}.
+\end{aligned}$$
+<p>Here $\mathbf n_K$ is the outward normal of the element and $\hat F_f^{\text{out}}$ the flux <em>out of</em> the element through face $f$. The factor $2/h$ is the
+chain rule $\partial_x = \tfrac{2}{h}\partial_\xi$, and $\tfrac{2}{h w_0}$ is the face quadrature weight $\tfrac h2 w_m$ divided by the diagonal mass entry
+$\tfrac{h^2}{4} w_0 w_m$ ($w_0 = w_p = \tfrac{2}{p(p+1)}$ is the GLL end-point weight). Only the nodes on the element boundary receive face terms. With the upwind flux,
+$\hat F^{\text{out}} - (\mathbf a\cdot\mathbf n_K)u^- = \min(\mathbf a\cdot\mathbf n_K, 0)\,(u^+ - u^-)$: only <em>inflow</em> faces contribute, and only through the jump.
+In time we use the 5-stage, 4th-order <b>low-storage Runge–Kutta</b> method of Carpenter and Kennedy,</p>
+$$\text{for } s = 0,\dots,4:\qquad k \leftarrow A_s\,k + \Delta t\, L(u), \qquad u \leftarrow u + B_s\,k,$$
+<p>which needs only two arrays per DOF ($u$ and $k$) — on a GPU, memory is the scarce resource. The time step is
+$\Delta t = h/\big((|a_x| + |a_y|)(2p+1)\big)$; the test suite checks (on a $4\times4$ mesh, $p = 1,2,3$, several velocities) that every eigenvalue of the semi-discrete operator, scaled by this $\Delta t$ and even by $2\Delta t$,
+lies inside the stability region of the method.</p>
+
+<h3>Data layout and kernels</h3>
+<p>All arrays are flat f32 storage buffers, element-major: DOF $g = e N_p + j n + i$ with $e = e_y N + e_x$. The face buffer holds one value per face node; the
+face to the <em>right</em> of element $e$ owns slots $e n + m$, the face <em>above</em> it owns slots $N^2 n + e n + m$ — each periodic face is owned by exactly one
+element (its left or lower neighbour $K^-$), so the face kernel writes every slot exactly once. One RK stage is four dispatches:</p>
+<table class="data compact kernels">
+<tr><th>kernel</th><th>threads</th><th>reads</th><th>writes</th><th>what it computes</th></tr>
+<tr><td><code>volume</code></td><td>one per DOF</td><td>$u$ (own element)</td><td>$r[g]$</td><td>$-\tfrac 2h(a_x \sum_k D_{ik}u_{kj} + a_y\sum_k D_{jk}u_{ik})$</td></tr>
+<tr><td><code>surface</code></td><td>one per face node</td><td>$u^-$, $u^+$</td><td>flux slot</td><td>upwind $\hat F$</td></tr>
+<tr><td><code>lift</code></td><td>one per DOF</td><td>$u$, $r$, face slots</td><td>$r[g]$</td><td>adds the face terms (boundary DOFs only: divergent)</td></tr>
+<tr><td><code>rkStage</code></td><td>one per DOF</td><td>$u^{\text{in}}$, $r$, $k$</td><td>$k$, $u^{\text{out}}$</td><td>LSRK stage; ping-pong $u^{\text{in}} \to u^{\text{out}}$</td></tr>
+</table>
+<p>Here is the complete volume kernel (generated for each $p$, with the matrix $D$ baked in as constants so the compiler can unroll the loop):</p>
+<pre class="code" id="wgsl-volume"></pre>
+<p>The file <code>lib/gpu/cpuTwin.js</code> contains the same four kernels as plain JavaScript loops in f64 ("the loop body is one GPU thread"), with identical
+indexing. It is tested against an independent, naive weak-form implementation, reproduces $-\mathbf a\cdot\nabla u$ exactly for polynomial data of degree $\le p$,
+conserves $\int u$ to round-off, never increases the discrete energy, and converges at the optimal rate $p+1$ in $L^2$. The GPU result is then validated against the twin.</p>
+
+<h2 id="sumfact">Sum factorisation: $O(p^{d+1})$ instead of $O(p^{2d})$</h2>
+<p>Look again at the volume term. The $x$-derivative of the nodal values of one element is a linear map from $N_p$ numbers to $N_p$ numbers, so one could
+store it as an $N_p\times N_p$ matrix and multiply: $2N_p^2 = 2n^{2d}$ FLOPs per element in $d$ dimensions. But the basis is a tensor product,
+$\phi_{ij}(\xi,\eta) = \ell_i(\xi)\,\ell_j(\eta)$, so</p>
+$$\partial_\xi u(\xi_i, \eta_j) = \sum_{k,l} u_{kl}\,\ell_k'(\xi_i)\,\ell_l(\eta_j) = \sum_k D_{ik}\, u_{kj}\qquad(\text{since } \ell_l(\eta_j) = \delta_{lj}).$$
+<p>The big matrix is the Kronecker product $I\otimes D$ and is mostly zeros: the derivative acts along one index at a time. Applying the small
+$n\times n$ matrix $D$ to each of the $n^{d-1}$ lines of nodes costs $n^{d-1}\cdot 2n^2 = 2n^{d+1}$ FLOPs: <b>sum factorisation</b>.
+The same trick works for interpolation to quadrature points and for the transposed (test-function) operations, and it is the reason high-order
+tensor-product elements are affordable. On a GPU it also reduces the data each thread needs: a DOF reads one row and one column of its element, not the whole element.</p>
+<table class="data compact" id="sumfact-table"></table>
+
+<h2 id="fusion">Kernel fusion and occupancy</h2>
+<p>Each of our four kernels reads its inputs from global memory and writes its outputs back, and the next kernel reads them again. Since we are
+memory-bound, the obvious optimisation is <b>kernel fusion</b>: one kernel per stage that computes volume and face terms and performs the RK update while
+the values are still in registers. In the cost model (ideal caches, f32, $p=3$) the four separate kernels move 48 bytes per DOF and stage, a fully fused kernel
+only 16 bytes (read $u$ and $k$, write $u^{\text{out}}$ and $k$), raising the intensity from about $0.68$ to about $2$ FLOP/byte — roughly a $3\times$ speed-up
+for a memory-bound code. The price: each face flux is computed twice (once by each neighbour), the kernel needs more registers (lower occupancy), and the code
+is harder to read. Production DG codes fuse aggressively and stage element data through workgroup memory; this chapter's solver deliberately keeps four
+simple kernels that mirror the mathematics.</p>
+
+<h2 id="live">Live: DG advection on your GPU</h2>
+<p>The widget below compiles the four WGSL kernels for your choice of $p$, uploads the initial condition once, and then records many time steps into a single
+command buffer (20 dispatches per step). The GPU works through them without any CPU involvement; we wait for completion with
+<code>queue.onSubmittedWorkDone()</code> to measure the time of a batch, and read the solution back only once per animation frame to draw it.
+"Verify" runs the same number of steps on the f64 CPU twin and reports the largest pointwise difference. If your browser has no WebGPU, the widget
+runs the CPU twin alone and says so.</p>
+
+<figure class="widget" id="w-live">
+<figcaption><b>Live WebGPU DG-SEM advection</b> of a periodic field with velocity $\mathbf a = (1, 0.5)$ (after time 2 the exact solution is back at its start).
+Steps/s and DOF-updates/s (= DOFs × steps/s, each step being 5 RK stages) are measured for the GPU and for the single-threaded CPU twin on the same problem.
+"Effective bandwidth" converts the GPU rate into bytes/s with the ideal-cache byte counts of the roofline section; it is a lower bound of the real traffic.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Increase $N$ at fixed $p$. The GPU's DOF-updates/s grows with the problem size until the GPU is full; small problems cannot hide latency (and launch overhead dominates).
+The CPU's rate stays roughly constant.</li>
+<li>Press <em>Verify</em> for $p = 1, 2, 3$. The GPU (f32) and CPU (f64) results differ by roughly the f32 round-off times the solution size, accumulated over the steps — not by
+discretisation error, because both run the identical discrete algorithm.</li>
+<li>In the roofline widget, switch the device preset and see the measured star (from your machine) next to the model's predictions.</li>
+<li>In the thread widget, set $p = 1$: every DOF of a $2\times 2$-node element lies on the boundary, so the lift kernel no longer diverges. At $p = 3$, 4 of 16 DOFs are interior.</li>
+</ul>
+</div>
+
+<h2 id="precision">Single versus double precision, and CPU–GPU transfers</h2>
+<p>GPUs are fastest in f32; consumer GPUs run f64 at only a small fraction of the f32 rate, and WebGPU offers no f64 at all. Is f32 accurate enough? Each operation
+has a relative rounding error of at most $2^{-24}\approx 6\cdot10^{-8}$. In an explicit scheme these errors are not amplified (the scheme is stable), they merely accumulate
+slowly, so after hundreds of steps we expect differences from the f64 twin of order $10^{-7}$ to $10^{-6}$ relative to the solution — which is what the widget shows
+(our tests require less than $2\cdot10^{-5}$ after 100 steps). This is far below the discretisation error of practical meshes
+(at $p=3$ on a $32\times32$ mesh the $L^2$ error of the smooth test problem $\sin 2\pi x\,\sin 2\pi y$ at time $0.25$ is already below $10^{-6}$, and it decreases like $h^4$), so f32 suffices for this explicit
+hyperbolic problem. It becomes inadequate when one needs errors near $10^{-7}$ relative, for long-time statistics with drifting invariants, or for
+ill-conditioned implicit solves (the conditioning of elliptic matrices grows like $h^{-2}$ and eats digits); mixed precision (f32 work, f64 accumulation or residuals)
+is the common compromise.</p>
+<p>A second performance trap is the <b>bus between CPU and GPU</b>. A discrete GPU sits behind PCIe, whose bandwidth is more than an order of magnitude below
+the GPU's own memory bandwidth, and every read-back forces the CPU to wait until the GPU has finished all queued work (a pipeline stall). The rule:
+upload once, keep the data on the GPU, encode many steps per submission, and read back only what you need, rarely. Our widget reads back once per frame
+for display; doing so after each step would make the GPU solver slower than the CPU for all but the largest meshes.</p>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Missing bounds check.</b> The last workgroup is usually only partially filled; without <code>if (g &gt;= nDof) { return; }</code> those threads write past the end of the
+buffer (WebGPU clamps or discards out-of-bounds accesses, so you get silently wrong data rather than a crash).</li>
+<li><b>Scatter-adds in parallel.</b> "Each face adds its flux to both neighbours" looks innocent and gives wrong, non-reproducible results. Use a face buffer + gather, colouring,
+or atomics.</li>
+<li><b>Reading and writing the same buffer in one kernel</b> when threads read neighbours' values: some threads see old, some new values. Use ping-pong buffers.</li>
+<li><b>Uniform buffer layout.</b> WGSL structs have alignment rules (e.g. a <code>vec3&lt;f32&gt;</code> is aligned to 16 bytes, uniform buffer offsets must be multiples of 256 bytes
+on many devices). Mismatched offsets between the JavaScript <code>ArrayBuffer</code> and the WGSL struct give garbage constants without any error.</li>
+<li><b>Timing the wrong thing.</b> <code>queue.submit()</code> returns immediately; the GPU runs asynchronously. Measure from submission to
+<code>onSubmittedWorkDone()</code> over a batch long enough that the fixed overhead is negligible.</li>
+</ul>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>GPUs maximise throughput: thousands of lanes, warps executing in lockstep (SIMT), latency hidden by keeping many warps resident (occupancy).</li>
+<li>Divergent branches cost the sum of both paths for a warp; one thread per DOF gives plenty of parallelism with little divergence for DG.</li>
+<li>Explicit DG kernels have low arithmetic intensity (well below 10 FLOP/byte): they are memory-bound, so coalesced SoA layouts and fewer bytes (fusion) matter more than FLOPs.</li>
+<li>DG maps well to GPUs: element-local dense work, coupling only through faces, diagonal mass matrix, explicit stepping. CG assembly races and implicit solves need more care.</li>
+<li>Parallel scatter-adds race. Cures: a face buffer written once per face and gathered per element, graph colouring, or (integer/emulated) atomics.</li>
+<li>Sum factorisation reduces element operator cost from $O(p^{2d})$ to $O(p^{d+1})$ for tensor-product bases.</li>
+<li>f32 is sufficient for explicit hyperbolic DG at moderate accuracy; keep data on the GPU and read back rarely.</li>
+</ul>
+
+<h2 id="references">References</h2>
+<ul>
+<li>A. Klöckner, T. Warburton, J. Bridge, J. S. Hesthaven, <em>Nodal discontinuous Galerkin methods on graphics processors</em>, J. Comput. Phys. 228 (2009) 7863–7882.</li>
+<li>J. S. Hesthaven, T. Warburton, <em>Nodal Discontinuous Galerkin Methods: Algorithms, Analysis, and Applications</em>, Springer, 2008.</li>
+<li>D. A. Kopriva, <em>Implementing Spectral Methods for Partial Differential Equations</em>, Springer, 2009.</li>
+<li>G. J. Gassner, <em>A skew-symmetric discontinuous Galerkin spectral element discretization and its relation to SBP-SAT finite difference methods</em>, SIAM J. Sci. Comput. 35 (2013) A1233–A1253.</li>
+<li>S. A. Orszag, <em>Spectral methods for problems in complex geometries</em>, J. Comput. Phys. 37 (1980) 70–92 (sum factorisation).</li>
+<li>M. H. Carpenter, C. A. Kennedy, <em>Fourth-order 2N-storage Runge–Kutta schemes</em>, NASA Technical Memorandum 109112, 1994.</li>
+<li>S. Williams, A. Waterman, D. Patterson, <em>Roofline: an insightful visual performance model for multicore architectures</em>, Commun. ACM 52(4) (2009) 65–76.</li>
+<li>M. Kronbichler, K. Kormann, <em>A generic interface for parallel cell-based finite element operator application</em>, Computers &amp; Fluids 63 (2012) 135–147.</li>
+<li>D. B. Kirk, W. W. Hwu, <em>Programming Massively Parallel Processors: A Hands-on Approach</em>, Morgan Kaufmann (1st ed. 2010).</li>
+<li>W3C, <em>WebGPU</em> and <em>WebGPU Shading Language (WGSL)</em> specifications, <a href="https://www.w3.org/TR/webgpu/">w3.org/TR/webgpu</a>, <a href="https://www.w3.org/TR/WGSL/">w3.org/TR/WGSL</a>.</li>
+</ul>
+
+</main>
+</body>
+</html>
