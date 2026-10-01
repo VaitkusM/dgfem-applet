@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2. Strong, weak, mixed &amp; flux forms — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch02.js"></script>
+</head>
+<body data-chapter="02">
+<main class="content">
+
+<h1><span class="chapnum">2</span>Strong, weak, mixed &amp; flux forms</h1>
+<p class="subtitle">One PDE, several ways to write it down — and each way leads to a different family of numerical methods.</p>
+
+<p class="lead">A PDE written as "this expression equals that one at every point" is called the <b>strong form</b>. Almost every modern
+discretisation starts instead from an <em>integral</em> statement obtained by multiplying with test functions and integrating by parts:
+the <span class="term" data-g="weakform">weak form</span>. Which quantities we keep as unknowns (only $u$, or also its flux) and where we
+integrate by parts (over the whole domain, or cell by cell) decides whether we end up with continuous finite elements, mixed methods,
+finite volumes or discontinuous Galerkin.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$\Gamma_D$, $\Gamma_N$</td><td>parts of the boundary $\partial\Omega$ with <span class="term" data-g="dirichlet">Dirichlet</span> ($u$ given) and <span class="term" data-g="neumann">Neumann</span> (normal flux given) conditions</td></tr>
+<tr><td>$g$, $g_N$</td><td>Dirichlet data ($u = g$ on $\Gamma_D$) and Neumann data ($\partial_n u = \nabla u\cdot\mathbf n = g_N$ on $\Gamma_N$)</td></tr>
+<tr><td>$v$</td><td>a <span class="term" data-g="testfn">test function</span></td></tr>
+<tr><td>$a(u,v)$, $\ell(v)$</td><td>bilinear form $\int_\Omega\nabla u\cdot\nabla v\dd\mathbf x$ and linear form $\int_\Omega f v\dd\mathbf x + \int_{\Gamma_N} g_N v\dd s$</td></tr>
+<tr><td>$H^1(\Omega)$</td><td>functions with finite "energy" $\int (u^2 + |\nabla u|^2) < \infty$ — continuous kinks allowed, jumps not</td></tr>
+<tr><td>$V_h$, $\varphi_j$, $U_j$</td><td>a finite-dimensional space (e.g. piecewise linears on a mesh), its <span class="term" data-g="basisfn">basis functions</span> and the coefficients of $u_h = \sum_j U_j\varphi_j$</td></tr>
+<tr><td>$\boldsymbol\sigma = -\nabla u$</td><td>the flux of $u$ (for heat: the heat flux, Fourier's law with $k = 1$)</td></tr>
+</table>
+</div>
+
+<h2 id="strong">The strong form</h2>
+<p>Our model elliptic problem is the Poisson equation with mixed boundary conditions:</p>
+$$-\Delta u = f \;\text{ in } \Omega,\qquad u = g \;\text{ on } \Gamma_D,\qquad \partial_n u = g_N \;\text{ on } \Gamma_N .$$
+<p>Read physically: $u$ is a steady temperature, $f$ a heat source, the temperature is fixed on $\Gamma_D$ and the heat flux through $\Gamma_N$ is prescribed
+($g_N = 0$: insulated wall). A <em>classical</em> solution must have two continuous derivatives so that $\Delta u$ makes sense at every point.
+This is a strong requirement: a heat source that is switched on in a square and off outside it, or a domain with a re-entrant corner,
+already produces solutions whose second derivatives do not exist everywhere.</p>
+<p>The most direct discretisation of the strong form is the <b>finite difference</b> method: sample $u$ at grid points and replace derivatives
+by difference quotients, e.g. $-u''(x_i)\approx(-u_{i-1}+2u_i-u_{i+1})/h^2$ (chapter 0). Simple and effective on boxes; awkward on curved geometries,
+with variable coefficients or with discontinuous data.</p>
+
+<h2 id="weak">The weak form</h2>
+<p>Instead of demanding the equation at every point, we demand that its residual is "orthogonal" to every test function: we only look at
+the equation through averages. Step through the derivation:</p>
+
+<figure class="widget" id="w-ibp">
+<div class="steps">
+<div class="step"><p><b>1. Strong form.</b> $\;-\Delta u = f$ in $\Omega$, $\;u = g$ on $\Gamma_D$, $\;\partial_n u = g_N$ on $\Gamma_N$.</p></div>
+<div class="step"><p><b>2. Multiply by a test function $v$ and integrate</b> over $\Omega$:</p>
+$$-\int_\Omega \Delta u\, v \dd\mathbf x = \int_\Omega f\, v \dd\mathbf x .$$
+<p>If this holds for <em>all</em> smooth $v$, the PDE holds pointwise (choose $v$ as a narrow bump around any point).</p></div>
+<div class="step"><p><b>3. Integrate by parts</b> (Green's identity from chapter 0) to move one derivative from $u$ to $v$:</p>
+$$\int_\Omega \nabla u\cdot\nabla v \dd\mathbf x - \int_{\partial\Omega} \partial_n u\, v \dd s = \int_\Omega f\, v \dd\mathbf x .$$
+<p>Now only <em>first</em> derivatives of $u$ appear — a piecewise-linear "tent" function is allowed.</p></div>
+<div class="step"><p><b>4. Use the boundary conditions</b> in the boundary integral. On $\Gamma_N$ we know $\partial_n u = g_N$ — substitute it.
+On $\Gamma_D$ we do <em>not</em> know $\partial_n u$; we avoid it by requiring the test functions to vanish there: $v = 0$ on $\Gamma_D$.</p>
+$$\int_{\partial\Omega}\partial_n u\, v \dd s = \underbrace{\int_{\Gamma_D}\partial_n u\,v \dd s}_{=0\text{ since } v = 0} + \int_{\Gamma_N} g_N\, v \dd s .$$</div>
+<div class="step"><p><b>5. The weak form.</b> Find $u$ with $u = g$ on $\Gamma_D$ such that</p>
+<div class="box def">$$a(u, v) := \int_\Omega \nabla u\cdot\nabla v \dd\mathbf x \;=\; \int_\Omega f\,v \dd\mathbf x + \int_{\Gamma_N} g_N\, v \dd s =: \ell(v)
+\quad\text{for all } v \text{ with } v = 0 \text{ on } \Gamma_D .$$</div></div>
+<div class="step"><p><b>6. Read it carefully.</b> The Dirichlet condition had to be built into the trial function ($u = g$) and the test space ($v=0$):
+it is an <span class="term" data-g="essential">essential</span> condition. The Neumann condition entered by itself through the boundary term:
+it is a <span class="term" data-g="natural">natural</span> condition (and $g_N = 0$ requires no work at all). The form $a(u,v)$ is symmetric,
+and $a(v,v) = \int|\nabla v|^2 > 0$ for $v\neq0$ vanishing on $\Gamma_D$ — this positivity is what makes everything work.</p></div>
+</div>
+<figcaption><b>Deriving the weak form, step by step.</b> The same manoeuvre — multiply, integrate, integrate by parts, insert what is known on the
+boundary — is used for every method in this course.</figcaption>
+</figure>
+
+<p>The natural home of weak solutions is the <b>Sobolev space</b> $H^1(\Omega)$ of functions whose values and first derivatives are square-integrable.
+Intuitively: functions with finite "stretching energy" $\int|\nabla u|^2$. Continuous functions with kinks (like tents) are in $H^1$, functions with
+jumps are not (their derivative would contain a Dirac spike with infinite energy). This explains why continuous finite elements must be
+<em>continuous</em> across element boundaries, and why discontinuous Galerkin methods (chapter 8) need extra terms to compensate.</p>
+
+<h3>Weak form = energy minimisation</h3>
+<p>For our symmetric, positive problem the weak form is equivalent to a minimisation principle (the <b>Dirichlet principle</b>):
+$u$ minimises the energy</p>
+$$J(v) = \frac12\int_\Omega |\nabla v|^2 \dd\mathbf x - \int_\Omega f\,v\dd\mathbf x$$
+<p>over all $v$ with the right boundary values. (Setting the derivative of $J(u + \varepsilon w)$ with respect to $\varepsilon$ to zero at $\varepsilon=0$
+gives exactly $a(u,w) = \ell(w)$.) Physically: a membrane under a load $f$ settles into the shape of least energy.</p>
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Minimising $\frac12\int|\nabla v|^2$ subject to boundary values gives <em>harmonic</em> interpolation — the basis of harmonic mesh parameterisation,
+Laplacian mesh editing, Poisson image editing and diffusion curves. You have probably solved weak forms already without calling them that.</p>
+</div>
+
+<figure class="widget" id="w-energy">
+<figcaption><b>The Galerkin solution is the energy minimiser.</b> The coloured curve is a piecewise-linear $v$ on 8 cells for $-u'' = \pi^2\sin\pi x$; drag its
+nodes. The energy $J(v)$ is never lower than $J(u_h)$, the value at the Galerkin solution (dashed). "Snap to minimiser" moves you there.</figcaption>
+</figure>
+
+<h2 id="galerkin">The Galerkin method</h2>
+<p>The weak form still involves infinitely many test functions. The <span class="term" data-g="galerkin">Galerkin method</span> replaces the function space by a
+finite-dimensional one, $V_h = \mathrm{span}\{\varphi_1,\dots,\varphi_n\}$, and asks for</p>
+$$u_h = \sum_{j=1}^n U_j\varphi_j \in V_h \quad\text{with}\quad a(u_h, \varphi_i) = \ell(\varphi_i)\quad (i = 1,\dots,n).$$
+<p>By linearity of $a$ in its first argument this is a linear system $A\mathbf U = \mathbf b$ with</p>
+$$A_{ij} = a(\varphi_j,\varphi_i) = \int_\Omega\nabla\varphi_j\cdot\nabla\varphi_i\dd\mathbf x ,\qquad b_i = \ell(\varphi_i).$$
+<p>If each $\varphi_i$ is nonzero only on a few mesh cells ("local support"), most $A_{ij}$ vanish: the matrix is <b>sparse</b>.
+In 1D with "hat" functions — $\varphi_i(x_i) = 1$, linear down to 0 at the neighbouring nodes — we get $A = \frac1h\,\mathrm{tridiag}(-1, 2, -1)$,
+the same matrix as finite differences (up to the factor $h$ and the right-hand side, which is now a weighted average of $f$).</p>
+<p>Two properties make Galerkin methods attractive:</p>
+<ul>
+<li><b>Galerkin orthogonality:</b> subtracting the discrete from the continuous equations gives $a(u - u_h, v_h) = 0$ for all $v_h\in V_h$: the error is orthogonal to the
+discrete space in the "energy inner product" $a(\cdot,\cdot)$.</li>
+<li><b>Best approximation (Céa's lemma):</b> consequently $u_h$ is the <em>best</em> approximation of $u$ in $V_h$ measured in the energy norm $\sqrt{a(e,e)} = \|\nabla e\|$.
+The error of the method is the error of the best possible fit — approximation theory (chapter 0's interpolation estimates) gives the convergence rates.</li>
+</ul>
+
+<figure class="widget" id="w-galerkin">
+<figcaption><b>1D Galerkin with hat functions</b> for $-u'' = f$. Left: each coloured tent is $U_j\varphi_j$; their sum is the black polyline $u_h$, the grey curve is the
+exact solution. Right: the tridiagonal matrix ($hA$ has entries 2 and −1). Notice the read-out: in 1D the nodal values of $u_h$ are <em>exact</em>
+(to round-off) — a special property of this 1D problem (the Green's function is piecewise linear). It is also a warning from chapter 0: measuring
+errors only at nodes can be misleading — the $L^2$ error is only second order.</figcaption>
+</figure>
+
+<h2 id="mixed">The mixed form: the flux as an unknown</h2>
+<p>Often the quantity of interest is not $u$ but its flux $\boldsymbol\sigma = -\nabla u$ (heat flux, Darcy velocity in porous media,
+electric current). Differentiating a computed $u_h$ loses accuracy, so why not compute $\boldsymbol\sigma$ directly? Write the Poisson
+equation as a <b>first-order system</b>:</p>
+$$\boldsymbol\sigma + \nabla u = 0,\qquad \nabla\cdot\boldsymbol\sigma = f \quad\text{in }\Omega .$$
+<p>Multiply the first equation by a vector test function $\boldsymbol\tau$, the second by a scalar $v$, integrate, and integrate by parts in the
+<em>first</em> one ($\int\nabla u\cdot\boldsymbol\tau = \int_{\partial\Omega}u\,\boldsymbol\tau\cdot\mathbf n - \int u\,\nabla\cdot\boldsymbol\tau$):</p>
+<div class="box def">
+$$\begin{aligned}
+\int_\Omega \boldsymbol\sigma\cdot\boldsymbol\tau \dd\mathbf x - \int_\Omega u\,\nabla\cdot\boldsymbol\tau \dd\mathbf x &= -\int_{\partial\Omega} g\,\boldsymbol\tau\cdot\mathbf n \dd s &&\text{for all } \boldsymbol\tau,\\
+\int_\Omega (\nabla\cdot\boldsymbol\sigma)\, v \dd\mathbf x &= \int_\Omega f\,v \dd\mathbf x &&\text{for all } v.
+\end{aligned}$$
+</div>
+<p>(Here we took $\Gamma_D = \partial\Omega$.) Three remarkable changes compared to the primal weak form:</p>
+<ul>
+<li>The roles of the boundary conditions <b>swap</b>: the Dirichlet value $g$ now appears in a boundary integral (natural), while a Neumann condition
+would prescribe $\boldsymbol\sigma\cdot\mathbf n$ and become essential.</li>
+<li>$u$ appears without derivatives — it may be <b>discontinuous</b> (piecewise constant!), while $\boldsymbol\sigma$ needs a well-defined divergence: its <em>normal component</em>
+must be continuous across cell faces (the space $H(\mathrm{div})$).</li>
+<li>Choosing $v$ = indicator function of one cell in the second equation gives $\int_{\partial K}\boldsymbol\sigma_h\cdot\mathbf n = \int_K f$: the discrete flux balances the
+source <b>exactly in every cell</b>, just like a finite volume method (chapter 5).</li>
+</ul>
+<p>The price: the linear system has the block form $\begin{pmatrix} M & B^T\\ B & 0\end{pmatrix}$ — a <span class="term" data-g="saddle">saddle-point problem</span>,
+symmetric but <em>indefinite</em>, and the two discrete spaces must be compatible (the <span class="term" data-g="infsup">inf–sup condition</span>). Chapter 9 makes
+this practical with Raviart–Thomas elements and hybridization.</p>
+
+<h2 id="fluxform">The flux form and cell-wise integration: FV and DG</h2>
+<p>For a conservation law $\partial_t u + \nabla\cdot\mathbf F(u) = 0$ (chapter 1) we can integrate by parts <em>on each cell $K$ separately</em> instead of over the whole domain:</p>
+$$\int_K \partial_t u\, v \dd\mathbf x - \int_K \mathbf F(u)\cdot\nabla v \dd\mathbf x + \int_{\partial K} \hat F\, v \dd s = 0 .$$
+<p>The boundary integral now runs over the cell's faces, where the neighbouring cell may hold a different value of $u$ — so the physical normal flux
+is replaced by a <span class="term" data-g="numflux">numerical flux</span> $\hat F(u^-, u^+, \mathbf n)$. Two famous special cases:</p>
+<ul>
+<li><b>Discontinuous Galerkin</b> (chapter 6): $u$ and $v$ are polynomials of degree $p$ on each cell, no continuity across faces.</li>
+<li><b>Finite volume</b> (chapter 5): $p = 0$. With $v = 1$ the volume term vanishes ($\nabla v = 0$) and we get $|K|\,\frac{\mathrm d}{\mathrm dt}\bar u_K = -\int_{\partial K}\hat F\dd s$ —
+the integral conservation law of chapter 1, one cell at a time.</li>
+</ul>
+<p>The same cell-wise idea applied to the Poisson equation gives DG methods for diffusion (chapter 8), where the numerical fluxes must handle both $u$ and $\nabla u$.</p>
+
+<figure class="widget" id="w-forms">
+<figcaption><b>One problem, three forms.</b> $-u'' = f$ on $(0,1)$ with Dirichlet data, solved by finite differences (strong form, point values),
+continuous P1 finite elements (weak form) and the mixed method (piecewise-constant $u_h$, continuous piecewise-linear flux $\sigma_h$).
+Right: the flux. The CG flux $-u_h'$ is piecewise constant and jumps at every node; the mixed flux is continuous and one order more accurate — see the
+rate table (computed live on $N = 8\dots64$). The price: the mixed $u_h$ is only first-order accurate as a function (it is second-order accurate as
+cell averages).</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>"Heat source near x = 0.3", $N = 4$: the FD points are close to the exact curve, CG nodes are exact, the mixed bars approximate cell averages.</li>
+<li>Compare the flux plots at $N = 6$: the mixed flux follows the exact flux closely; the CG flux is a staircase.</li>
+<li>In the energy widget, drag a node far away: the energy grows quadratically — the minimum is unique because $a(v,v) > 0$.</li>
+</ul>
+</div>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li>Forgetting that test functions must vanish where $u$ is prescribed (step 4) leaves the unknown $\partial_n u$ in the equations — or, if simply dropped, imposes
+a wrong condition. Chapter 4 shows how Nitsche's method keeps that boundary term honestly.</li>
+<li>Choosing the spaces of a mixed method independently (e.g. both continuous piecewise linear) can violate the inf–sup condition and give wildly oscillating
+or non-unique solutions.</li>
+</ul>
+</div>
+
+<h2 id="summary">Summary</h2>
+<table class="data text">
+<tr><th>form</th><th>unknowns</th><th>continuity</th><th>Dirichlet BC</th><th>leads to</th></tr>
+<tr><td>strong</td><td>$u$ at points</td><td>—</td><td>set values</td><td>finite differences</td></tr>
+<tr><td>weak (primal)</td><td>$u\in H^1$</td><td>$u$ continuous</td><td>essential</td><td>CG finite elements (ch. 3)</td></tr>
+<tr><td>mixed</td><td>$\boldsymbol\sigma\in H(\mathrm{div})$, $u\in L^2$</td><td>$\boldsymbol\sigma\cdot\mathbf n$ continuous</td><td>natural</td><td>RT elements, hybridization (ch. 9)</td></tr>
+<tr><td>cell-wise flux form</td><td>$u$ per cell</td><td>none (numerical fluxes)</td><td>through $\hat F$</td><td>FV, DG, FR (ch. 5–8)</td></tr>
+</table>
+
+<h2 id="references">References</h2>
+<ul>
+<li>D. Braess, <em>Finite Elements: Theory, Fast Solvers, and Applications in Solid Mechanics</em>, Cambridge University Press (3rd ed. 2007).</li>
+<li>A. Ern, J.-L. Guermond, <em>Theory and Practice of Finite Elements</em>, Springer (2004).</li>
+<li>F. Brezzi, M. Fortin, <em>Mixed and Hybrid Finite Element Methods</em>, Springer (1991).</li>
+</ul>
+
+</main>
+</body>
+</html>

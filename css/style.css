@@ -243,3 +243,7 @@ footer.site { max-width: var(--measure); margin: 4rem auto 0; color: var(--ink-f
   .widget-body > .controls { flex: 1 1 100%; }
   body { font-size: 17px; }
 }
+
+/* tables placed directly in the prose column: centre them; .text = left-aligned textual cells */
+.content > table.data { margin-left: auto; margin-right: auto; }
+table.data.text th, table.data.text td { text-align: left; vertical-align: top; }

@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>3. Continuous finite elements — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch03.js"></script>
+</head>
+<body data-chapter="03">
+<main class="content">
+
+<h1><span class="chapnum">3</span>Continuous finite elements</h1>
+<p class="subtitle">From the weak form to a sparse linear system: meshes, basis functions, reference elements, assembly and solvers — for the 2D Poisson problem.</p>
+
+<p class="lead">Chapter 2 turned $-\Delta u = f$ into the weak form $a(u,v) = \ell(v)$ and the Galerkin method into a linear system
+$A\mathbf U = \mathbf b$ with $A_{ij} = \int\nabla\varphi_j\cdot\nabla\varphi_i$. What remains is engineering: choose a mesh and basis functions
+with small supports, compute the integrals element by element, and solve the resulting sparse system. This is the
+<b>continuous Galerkin (CG) finite element method</b>, the workhorse of structural mechanics, heat transfer and electromagnetics.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$\mathcal T_h$, $K$</td><td>a triangulation (<span class="term" data-g="mesh">mesh</span>) of $\Omega$ and one of its triangles (<span class="term" data-g="element">elements</span>)</td></tr>
+<tr><td>$h_K$, $h$</td><td>diameter of $K$ and the maximum over all elements</td></tr>
+<tr><td>$\mathbb P_p(K)$</td><td>polynomials of total degree $\le p$ on $K$ (dimension $(p+1)(p+2)/2$: 3 for $p=1$, 6 for $p=2$)</td></tr>
+<tr><td>$V_h^p$</td><td>continuous functions that are in $\mathbb P_p(K)$ on every $K$ — the CG space</td></tr>
+<tr><td>$\hat K$, $\hat{\mathbf x} = (\hat x,\hat y)$</td><td>the <span class="term" data-g="refelem">reference triangle</span> with vertices (0,0), (1,0), (0,1), and coordinates on it</td></tr>
+<tr><td>$F_K$, $J$</td><td>the affine map $F_K(\hat{\mathbf x}) = \mathbf a + J\hat{\mathbf x}$ from $\hat K$ onto $K$ and its <span class="term" data-g="jacobian">Jacobian</span> matrix</td></tr>
+<tr><td>$\lambda_0,\lambda_1,\lambda_2$</td><td>barycentric coordinates of a point in a triangle</td></tr>
+<tr><td>$\mathrm{nnz}$, $\kappa(A)$</td><td>number of non-zero matrix entries; <span class="term" data-g="condition">condition number</span></td></tr>
+</table>
+</div>
+
+<h2 id="mesh">Meshes</h2>
+<p>We cover $\Omega$ by triangles that meet only at whole edges or vertices — a <em>conforming</em> triangulation, exactly the "watertight mesh without
+T-junctions" that rasterisers and geometry processing also prefer. The mesh size $h$ is the largest element diameter; refining the mesh
+means $h\to0$. The quality of the triangles matters: the error constants grow when angles approach 180°.</p>
+
+<h2 id="basis">Piecewise polynomials and their basis functions</h2>
+<p>The simplest CG space, $V_h^1$, contains all continuous functions that are linear on each triangle. Such a function is determined by its values at
+the vertices, so the natural basis consists of <b>hat functions</b> $\varphi_j$: $\varphi_j = 1$ at vertex $j$, $0$ at all other vertices, linear in between.
+On a triangle with vertices $\mathbf v_0, \mathbf v_1, \mathbf v_2$ the three hat functions that are nonzero there are exactly the
+<b>barycentric coordinates</b> $\lambda_0, \lambda_1, \lambda_2$ — the weights $\mathbf x = \lambda_0\mathbf v_0 + \lambda_1\mathbf v_1 + \lambda_2\mathbf v_2$, $\sum\lambda_i = 1$,
+that a GPU uses to interpolate vertex attributes. A P1 finite element function <em>is</em> a Gouraud-shaded mesh.</p>
+<p>For more accuracy we use piecewise quadratics $V_h^2$: six nodes per triangle (vertices and edge midpoints), with basis functions
+$\lambda_i(2\lambda_i - 1)$ at vertices and $4\lambda_a\lambda_b$ at the midpoint of edge $ab$. Neighbouring triangles share edge nodes, which keeps the
+function continuous.</p>
+
+<figure class="widget" id="w-basis">
+<figcaption><b>Basis functions.</b> Click any node. The colour shows $\varphi_j$, the green outline its <em>support</em> (the triangles where it is nonzero). Only basis
+functions whose supports overlap interact in $A$, so each row of $A$ has only a handful of nonzeros. P2 vertex functions take negative values;
+P2 edge functions are "bubbles" over two triangles.</figcaption>
+</figure>
+
+<h2 id="reference">The reference element and the affine map</h2>
+<p>Every triangle $K$ is the image of the reference triangle $\hat K$ under the affine map</p>
+$$F_K(\hat{\mathbf x}) = \mathbf v_0 + J\hat{\mathbf x},\qquad J = \big[\,\mathbf v_1 - \mathbf v_0 \;\big|\; \mathbf v_2 - \mathbf v_0\,\big] \in\R^{2\times2}.$$
+<p>Basis functions are defined once on $\hat K$ and transported: $\varphi(\mathbf x) = \hat\varphi(F_K^{-1}(\mathbf x))$ — the "texture coordinates" of the element.
+Two formulas convert integrals and derivatives:</p>
+<ul>
+<li><b>Area element:</b> $\int_K g\dd\mathbf x = \int_{\hat K} g(F_K(\hat{\mathbf x}))\,|\det J| \dd\hat{\mathbf x}$, with $|\det J| = 2|K|$.</li>
+<li><b>Gradients</b> (chain rule): $\hat\nabla\hat\varphi = J^T\nabla\varphi$, hence $\nabla\varphi = J^{-T}\hat\nabla\hat\varphi$.</li>
+</ul>
+<p>So all integrals become integrals over $\hat K$, computed with one fixed quadrature rule: $\int_{\hat K} \hat g \approx \sum_q w_q\,\hat g(\hat{\mathbf x}_q)$
+(our rules are exact for polynomials up to a chosen degree; see <code>lib/core/quad/simplex.js</code>).</p>
+
+<figure class="widget" id="w-refmap">
+<figcaption><b>The affine reference map</b>, like texture mapping a triangle. The coloured lines $\hat x = $ const, $\hat y = $ const and $\hat x+\hat y = $ const are mapped
+to the physical triangle. The orange arrow is $\nabla\varphi_1 = J^{-T}(1,0)^T$; it is perpendicular to the edge opposite vertex 1, as it must be (along that edge
+$\varphi_1 = 0$). Drag a vertex across the opposite edge: $\det J$ becomes negative — an <em>inverted element</em>, fatal for a mesh.</figcaption>
+</figure>
+
+<h2 id="assembly">Assembly: building the matrix element by element</h2>
+<p>Because integrals split over elements, $A_{ij} = \sum_{K} \int_K \nabla\varphi_j\cdot\nabla\varphi_i \dd\mathbf x$, and on each $K$ only the few basis functions living on $K$
+are nonzero. The algorithm is a <em>scatter-add</em>:</p>
+<pre><code>for each element K:
+    dofs = global indices of the local basis functions of K      # 3 for P1, 6 for P2
+    K_loc = zeros(n_loc, n_loc);  b_loc = zeros(n_loc)
+    for each quadrature point q of the reference triangle:
+        compute x_q = F_K(x̂_q), weight w = w_q |det J|, gradients ∇φ_i = J^{-T} ∇̂φ̂_i
+        K_loc[i][j] += w ∇φ_j·∇φ_i ;   b_loc[i] += w f(x_q) φ_i(x_q)
+    A[dofs, dofs] += K_loc ;   b[dofs] += b_loc                 # scatter-add</code></pre>
+<p>For P1 the gradients are constant on $K$ and the local matrix has a classic closed form. If $\theta_k$ is the angle at the vertex opposite the edge $\{i, j\}$, then</p>
+$$K^{\text{loc}}_{ij} = -\tfrac12\cot\theta_k\quad (i\neq j),\qquad K^{\text{loc}}_{ii} = -\sum_{j\neq i}K^{\text{loc}}_{ij}.$$
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>This is the famous <b>cotangent Laplacian</b> of discrete differential geometry (Pinkall &amp; Polthier 1993) used for mesh smoothing, parameterisation and
+deformation: it is <em>literally</em> the P1 finite element stiffness matrix. Rows sum to zero because constants have zero gradient. For obtuse angles the
+cotangent is negative and positive off-diagonal entries appear — the discrete maximum principle can then fail, which is why "Delaunay" meshes are preferred
+in both communities.</p>
+</div>
+
+<figure class="widget" id="w-assembly">
+<figcaption><b>Assembly in action</b> on a 3×3 grid of 18 triangles and 16 vertices. Each step computes one 3×3 local matrix and adds it into the global
+16×16 matrix at the rows/columns of the element's vertices (highlighted). Off-diagonal entries are negative (blue), diagonal entries positive (orange).
+The read-out checks the cotangent formula and the zero row sums (this is the matrix before boundary conditions are applied).</figcaption>
+</figure>
+
+<h2 id="system">Boundary conditions and the linear system</h2>
+<p>The assembled matrix has a one-dimensional kernel (constants) until boundary conditions are imposed. With Dirichlet data $u = g$ the simplest way is
+<em>elimination</em>: boundary DOFs get their values $g(\mathbf x_j)$, their rows are dropped and their known contributions are moved to the right-hand
+side. What remains is a system that is</p>
+<ul>
+<li><b>sparse:</b> about 7 nonzeros per row for P1 on a regular mesh (each vertex couples to itself and its ~6 neighbours), stored in <b>CSR</b> format
+(row pointers, column indices, values — an adjacency list of the mesh graph);</li>
+<li><b>symmetric positive definite</b> (<span class="term" data-g="spd">SPD</span>): $\mathbf U^TA\mathbf U = \int|\nabla u_h|^2 > 0$;</li>
+<li><b>ill-conditioned:</b> $\kappa(A) \sim h^{-2}$. Halving $h$ quadruples the condition number.</li>
+</ul>
+<p>Two families of solvers:</p>
+<ul>
+<li><b>Direct</b> (sparse Cholesky/LU). Elimination fills in entries only inside the matrix's band, so we first renumber the unknowns to make the band narrow:
+<em>reverse Cuthill–McKee</em> (RCM) is a breadth-first traversal of the mesh graph. On our structured grid the natural row-by-row numbering
+is already banded; a mesh generator typically produces an arbitrary ("random") numbering — compare both with RCM below.</li>
+<li><b>Iterative:</b> the <span class="term" data-g="cgsolver">conjugate gradient</span> method needs only products $A\mathbf x$ and converges in $O(\sqrt{\kappa})= O(h^{-1})$ iterations.
+A <em>preconditioner</em> $M\approx A^{-1}$ reduces the count; multigrid or domain decomposition (chapter 10) make it independent of $h$.</li>
+</ul>
+
+<h2 id="convergence">Accuracy: what to expect</h2>
+<p>By Céa's lemma (chapter 2) the error is as small as the best approximation of $u$ by piecewise polynomials, and interpolation theory (chapter 0) gives, for
+smooth $u$,</p>
+$$|u - u_h|_{H^1} \le C\,h^{p}, \qquad \|u - u_h\|_{L^2}\le C\,h^{p+1}.$$
+<p>The extra order in $L^2$ comes from a duality argument (Aubin–Nitsche): the error is tested against the solution of an auxiliary Poisson problem, which is
+again approximated well. Both rates are verified live below and in the test suite.</p>
+
+<figure class="widget" id="w-poisson">
+<figcaption><b>The 2D Poisson solver.</b> Unit square, manufactured solution, Dirichlet data from the exact solution. Left: $u_h$, the pointwise error
+$u_h - u$, or the mesh. Right (tabs): the sparsity pattern of the reduced matrix for different numberings of the unknowns, the CG residual history with and without
+Jacobi preconditioning, and a convergence study with fitted slopes. Increase $N$ and watch the CG iteration count grow roughly linearly in $N$.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Show the error for P1 and P2 at the same $N$: the P2 error is orders of magnitude smaller, and its pattern is more oscillatory (bubbles per element).</li>
+<li>Choose the random numbering: the nonzeros scatter over the whole matrix. RCM collapses them into a narrow band again.</li>
+<li>Gaussian peak with $N = 4$: the mesh cannot resolve the peak. The convergence tab shows the pre-asymptotic regime before the slopes settle.</li>
+<li>Maximum mesh distortion: the solution is still fine, the errors are slightly larger — FEM works on unstructured meshes.</li>
+</ul>
+</div>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Forgetting $|\det J|$ or using $J^{-1}$ instead of $J^{-T}$:</b> results look plausible on uniform meshes (where errors partially cancel) and break on distorted ones. Always test on
+distorted meshes.</li>
+<li><b>Too low quadrature order</b> for the load $\int f\varphi_i$: the rate silently drops. We use rules exact for degree $2p+3$ for assembly and $2p+6$ for error norms.</li>
+<li><b>Degenerate triangles</b> (angles near 180°): huge entries, bad conditioning, large error constants.</li>
+</ul>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>CG FEM = Galerkin with continuous piecewise polynomials on a mesh; P1 basis = barycentric coordinates.</li>
+<li>All work happens on a reference element: $\int_K g = \int_{\hat K} g\circ F_K\,|\det J|$, $\nabla\varphi = J^{-T}\hat\nabla\hat\varphi$.</li>
+<li>Assembly = loop over elements + scatter-add; P1 stiffness = cotangent Laplacian.</li>
+<li>The system is sparse, SPD, with $\kappa\sim h^{-2}$; solve with sparse direct methods (after reordering) or preconditioned CG.</li>
+<li>Error $O(h^p)$ in $H^1$ and $O(h^{p+1})$ in $L^2$ for smooth solutions.</li>
+</ul>
+
+<h2 id="references">References</h2>
+<ul>
+<li>P. G. Ciarlet, <em>The Finite Element Method for Elliptic Problems</em>, North-Holland (1978).</li>
+<li>S. C. Brenner, L. R. Scott, <em>The Mathematical Theory of Finite Element Methods</em>, Springer (3rd ed. 2008).</li>
+<li>U. Pinkall, K. Polthier, Computing discrete minimal surfaces and their conjugates, <em>Experimental Mathematics</em> 2 (1993).</li>
+<li>E. Cuthill, J. McKee, Reducing the bandwidth of sparse symmetric matrices, <em>Proc. ACM National Conference</em> (1969).</li>
+<li>Y. Saad, <em>Iterative Methods for Sparse Linear Systems</em>, SIAM (2nd ed. 2003).</li>
+</ul>
+
+</main>
+</body>
+</html>
