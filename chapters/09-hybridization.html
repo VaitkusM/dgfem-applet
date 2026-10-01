@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>9. Mixed methods &amp; hybridization — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch09.js"></script>
+<style>
+  svg.ch9-rt { display: block; margin: 0.6rem auto 0.2rem; width: 100%; max-width: 700px; height: auto; color: var(--ink); }
+  svg.ch9-rt text { font: 14px var(--font-ui, sans-serif); fill: currentColor; }
+  svg.ch9-rt .tri { fill: var(--accent); fill-opacity: 0.12; stroke: var(--ink-faint); stroke-width: 1.5; }
+  svg.ch9-rt .edge { stroke: var(--accent-3); stroke-width: 4; }
+  svg.ch9-rt .vec { stroke: var(--accent-2); stroke-width: 1.6; }
+  svg.ch9-rt .opp { fill: var(--accent-2); }
+  .ch9-caption { text-align: center; font-size: 0.92em; color: var(--ink-soft); margin-top: 0; }
+</style>
+</head>
+<body data-chapter="09">
+<main class="content">
+
+<h1><span class="chapnum">9</span>Mixed methods &amp; hybridization</h1>
+<p class="subtitle">Make the flux an unknown of its own, understand the saddle point this creates, and then break the problem apart so
+that only a small symmetric positive definite system on the mesh edges remains.</p>
+
+<p class="lead">In chapter 1 the flux was the star of the show: conservation laws are statements about fluxes through boundaries. Yet the
+methods of chapters 3 and 8 compute only $u$; the flux $-\nabla u$ is obtained afterwards by differentiation, and it is neither continuous
+across elements nor exactly conservative. <b>Mixed methods</b> compute the flux directly and conserve it exactly, cell by cell. The price is a
+<span class="term" data-g="saddle">saddle-point problem</span>. <span class="term" data-g="hybrid">Hybridization</span> removes that price —
+and, applied to DG, gives the <span class="term" data-g="hdg">HDG</span> method, whose global system is much smaller than that of interior penalty DG
+of the same degree.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$\bsigma = -\nabla u$, $\nabla\cdot\bsigma = f$</td><td>first-order (mixed) form of $-\Delta u = f$; $\bsigma$ is the physical (heat) flux; $u = g$ on $\partial\Omega$</td></tr>
+<tr><td>$(a,b)_K$, $\langle a,b\rangle_{\partial K}$</td><td>$\int_K ab$ and $\int_{\partial K} ab$; without subscript: summed over all elements</td></tr>
+<tr><td>$H(\mathrm{div})$</td><td>vector fields whose divergence is square-integrable; for piecewise polynomials: <em>normal components continuous</em> across edges</td></tr>
+<tr><td>$RT_0$, $P_0$</td><td>lowest-order <span class="term" data-g="rt">Raviart–Thomas</span> fluxes, piecewise-constant $u$</td></tr>
+<tr><td>$E$, $|E|$, $\n_E$</td><td>an edge, its length, its fixed global unit normal (out of $K^-$)</td></tr>
+<tr><td>$\boldsymbol\varphi_E$, $s_{K,E} = \pm1$</td><td>RT0 basis function of edge $E$, and its sign in triangle $K$ ($+1$ if $\n_E$ points out of $K$)</td></tr>
+<tr><td>$\lambda$, $\mu$</td><td>Lagrange multiplier on the edges (the <span class="term" data-g="skeleton">skeleton</span> $\Eh$) and its test function</td></tr>
+<tr><td>$D_K$, $C_K$, $H$</td><td>local (element) matrix, its coupling to $\lambda$, condensed global matrix</td></tr>
+<tr><td>$\mathbf q_h$, $u_h$, $\hat u_h = \lambda_h$, $\tau$</td><td>HDG flux ($\approx -\nabla u$), scalar, numerical trace, stabilisation parameter</td></tr>
+<tr><td>$k$, $u_h^\star$</td><td>HDG polynomial degree, post-processed solution of degree $k+1$</td></tr>
+</table>
+</div>
+
+<h2 id="mixed">Fluxes as primary unknowns</h2>
+<p>Split $-\Delta u = f$ into Fourier's law and the conservation law (chapter 1, with steady state and diffusivity 1):</p>
+$$\bsigma = -\nabla u \quad\text{(constitutive law)},\qquad \nabla\cdot\bsigma = f \quad\text{(conservation)},\qquad u = g \text{ on }\partial\Omega .$$
+<p>Why bother? In many applications the flux <em>is</em> the answer: the Darcy velocity of groundwater or oil in a porous rock, the heat flux
+through a wall, the current density in a conductor. Feeding a velocity field into a transport solver (chapters 5–6) requires that it conserves
+mass exactly in every cell — otherwise a tracer is created or destroyed numerically. A gradient computed from CG is not conservative:
+$\int_{\partial K}(-\nabla u_h)\cdot\n \neq \int_K f$ in general (for $P_1$ elements $\nabla u_h$ is constant on each triangle, so its net outflow is
+exactly zero, whatever the source $f$ is).</p>
+<p><b>Weak form.</b> Multiply the constitutive law by a vector test function $\boldsymbol\tau$ and integrate the $\nabla u$ term by parts (chapter 2):
+$(\bsigma,\boldsymbol\tau) + (\nabla u,\boldsymbol\tau) = (\bsigma,\boldsymbol\tau) - (u,\nabla\cdot\boldsymbol\tau) + \langle u,\boldsymbol\tau\cdot\n\rangle_{\partial\Omega} = 0$.
+Multiply the conservation law by a scalar $v$. With $u = g$ on the boundary:</p>
+<div class="box def">
+$$\begin{aligned}
+(\bsigma, \boldsymbol\tau) - (u, \nabla\cdot\boldsymbol\tau) &= -\langle g, \boldsymbol\tau\cdot\n\rangle_{\partial\Omega} &&\text{for all }\boldsymbol\tau,\\
+(\nabla\cdot\bsigma, v) &= (f, v) &&\text{for all } v.
+\end{aligned}$$
+</div>
+<p>Notice the role reversal compared with chapters 2–4: the Dirichlet condition $u = g$ is now <span class="term" data-g="natural">natural</span>
+(it appears on the right-hand side, nothing has to be built into a space), while a Neumann condition $\bsigma\cdot\n = g_N$ would be
+<span class="term" data-g="essential">essential</span>. No derivatives of $u$ appear at all, so $u$ may be discontinuous: piecewise constants are fine.
+But $\nabla\cdot\bsigma$ must make sense.</p>
+
+<h2 id="saddle">Saddle points and the inf–sup condition</h2>
+<p>The mixed form is the optimality condition of the <b>Lagrangian</b></p>
+$$\mathcal L(\bsigma, u) = \tfrac12(\bsigma,\bsigma) + \langle g, \bsigma\cdot\n\rangle_{\partial\Omega} - (u, \nabla\cdot\bsigma - f):$$
+<p>setting the derivative in direction $\boldsymbol\tau$ to zero gives the first equation, in direction $v$ the second. Read it as: <em>among all fluxes
+that satisfy the conservation law $\nabla\cdot\bsigma = f$, find the one with the smallest energy</em>; $u$ is the <b>Lagrange multiplier</b> of the
+conservation constraint. $\mathcal L$ is convex in $\bsigma$ and linear in $u$, so the solution is a <b>saddle point</b> — a minimum in $\bsigma$ and a maximum in $u$.
+After discretisation (basis functions for $\bsigma_h$ and $u_h$) the linear system is</p>
+$$\begin{pmatrix} M & -B^T\\ -B & 0\end{pmatrix}\begin{pmatrix}\boldsymbol\Sigma\\ \mathbf U\end{pmatrix} = \begin{pmatrix}-\mathbf G\\ -\mathbf F\end{pmatrix},\qquad
+M_{ij} = (\boldsymbol\varphi_j,\boldsymbol\varphi_i),\quad B_{Kj} = \int_K\nabla\cdot\boldsymbol\varphi_j$$
+<p>(the second block row multiplied by $-1$ to make the matrix symmetric). $M$ is SPD, but the whole matrix is <b>indefinite</b>: if $B^T$ is injective it has exactly
+as many positive eigenvalues as flux unknowns and as many negative ones as $u$ unknowns. Conjugate gradients do not apply; we use a direct
+solver with pivoting.</p>
+<p><b>When is it invertible?</b> Eliminating $\boldsymbol\Sigma = M^{-1}(B^T\mathbf U - \mathbf G)$ leaves $BM^{-1}B^T\,\mathbf U = \dots$, which is invertible exactly
+when $B^T$ is injective: every discrete $u_h \ne 0$ must be “seen” by some flux, $(u_h, \nabla\cdot\boldsymbol\tau_h)\ne 0$. Its quantitative,
+mesh-independent version is the <span class="term" data-g="infsup">inf–sup (LBB) condition</span></p>
+$$\inf_{u_h\ne0}\ \sup_{\boldsymbol\tau_h\ne0}\ \frac{(u_h,\nabla\cdot\boldsymbol\tau_h)}{\|u_h\|\,\|\boldsymbol\tau_h\|_{H(\mathrm{div})}} \;\ge\; \beta > 0 \quad\text{with } \beta \text{ independent of } h .$$
+<p>Intuition: the flux space must be rich enough to control every pressure-like mode of $u_h$. A blunt counter-example is a dimension count. Take
+continuous piecewise-linear fluxes ($2(N+1)^2$ unknowns on an $N\times N$ grid of $2N^2$ triangles) with discontinuous piecewise-linear $u_h$
+($6N^2$ unknowns). For $N\ge 2$, $2(N+1)^2 &lt; 6N^2$, so $B^T$ maps a larger space into a smaller one and cannot be injective: the matrix is
+singular, whatever we do. Even when the counts are fine, “natural-looking” equal-order pairs can fail more subtly — for the Stokes equations the
+continuous $P_1$–$P_1$ velocity–pressure pair admits spurious checkerboard pressures (Brezzi &amp; Fortin). The Raviart–Thomas pair below is designed so
+that $\nabla\cdot$ maps the flux space <em>onto</em> the $u$-space; it satisfies the inf–sup condition.</p>
+
+<h2 id="rt0">Raviart–Thomas elements: the unknowns are fluxes through edges</h2>
+<p><b>What continuity is needed?</b> For a piecewise polynomial $\bsigma_h$, the divergence theorem on each triangle shows that $\nabla\cdot\bsigma_h$ is a
+function (no delta functions on edges) exactly when the <em>normal</em> component $\bsigma_h\cdot\n$ is continuous across every edge — what flows out of one
+triangle flows into the next. The tangential component may jump. This is the space $H(\mathrm{div})$, and it is precisely the physics of conservation.</p>
+<p><b>RT0 on one triangle</b> consists of the fields $\boldsymbol\varphi(\mathbf x) = \mathbf a + b\,\mathbf x$ with $\mathbf a\in\R^2$, $b\in\R$: three parameters. On an edge
+(a line $\mathbf x\cdot\n = c$) the normal component $\mathbf a\cdot\n + b\,c$ is constant, and $\nabla\cdot\boldsymbol\varphi = 2b$ is constant. A natural basis has one function
+per edge. For edge $E$ of triangle $K$ with opposite vertex $\mathbf x_E^K$,</p>
+<div class="box def">
+$$\boldsymbol\varphi_E\big|_K(\mathbf x) = s_{K,E}\,\frac{|E|}{2|K|}\,\big(\mathbf x - \mathbf x_E^K\big),\qquad s_{K,E} = \begin{cases}+1 & \n_E \text{ points out of } K,\\ -1 & \text{otherwise.}\end{cases}$$
+<ul>
+<li>On the two other edges of $K$, $\mathbf x - \mathbf x_E^K$ runs <em>along</em> the edge (both end at $\mathbf x_E^K$), so $\boldsymbol\varphi_E\cdot\n = 0$ there.</li>
+<li>On $E$, $(\mathbf x - \mathbf x_E^K)\cdot\n_K$ equals the height of $K$ over $E$, i.e. $2|K|/|E|$; hence $\boldsymbol\varphi_E\cdot\n_E = 1$, from both triangles sharing $E$.</li>
+<li>$\nabla\cdot\boldsymbol\varphi_E|_K = s_{K,E}\,|E|/|K|$, so $\int_K\nabla\cdot\boldsymbol\varphi_E = s_{K,E}\,|E|$.</li>
+</ul>
+</div>
+<svg class="ch9-rt" viewBox="0 0 740 250" role="img" aria-label="RT0 basis function of an edge E: vectors x minus the opposite vertex, scaled; normal component 1 on E and 0 on the other edges">
+  <defs><marker id="ch9arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="var(--accent-2)"/></marker></defs>
+  <polygon class="tri" points="120,220 420,220 220,30"/>
+  <line class="edge" x1="420" y1="220" x2="220" y2="30"/>
+  <circle class="opp" cx="120" cy="220" r="6"/>
+  <text x="70" y="240">x_E (opposite vertex)</text>
+  <text x="340" y="110">E</text>
+  <g class="vec">
+    <line x1="175" y1="205" x2="196" y2="199" marker-end="url(#ch9arr)"/>
+    <line x1="230" y1="170" x2="272" y2="151" marker-end="url(#ch9arr)"/>
+    <line x1="290" y1="205" x2="355" y2="199" marker-end="url(#ch9arr)"/>
+    <line x1="205" y1="110" x2="237" y2="68" marker-end="url(#ch9arr)"/>
+    <line x1="290" y1="140" x2="355" y2="110" marker-end="url(#ch9arr)"/>
+    <line x1="350" y1="195" x2="437" y2="186" marker-end="url(#ch9arr)"/>
+    <line x1="250" y1="90" x2="299" y2="41" marker-end="url(#ch9arr)"/>
+    <line x1="330" y1="170" x2="410" y2="151" marker-end="url(#ch9arr)"/>
+  </g>
+  <text x="455" y="60">φ_E = |E|/(2|K|) (x − x_E)</text>
+  <text x="455" y="84">radial from x_E: tangent to the</text>
+  <text x="455" y="104">two other edges, normal flux 1 on E</text>
+</svg>
+<p class="ch9-caption">The RT0 function of edge $E$ is a scaled radial field emanating from the opposite vertex.</p>
+<p>The coefficient of $\boldsymbol\varphi_E$ in $\bsigma_h = \sum_E\Sigma_E\boldsymbol\varphi_E$ is therefore the normal flux density $\bsigma_h\cdot\n_E$ on $E$, and the total flux through $E$
+is $\Sigma_E|E|$. One unknown per edge, shared by the two triangles: normal continuity holds <em>by construction</em>. Each triangle needs the sign $s_{K,E}$
+because one global orientation $\n_E$ per edge is outward for one neighbour and inward for the other — the classic bookkeeping of oriented edges in a
+half-edge data structure.</p>
+<p><b>Exact conservation.</b> Testing the second equation with the indicator function of one triangle gives
+$\int_K\nabla\cdot\bsigma_h = \sum_{E\subset\partial K}s_{K,E}|E|\Sigma_E = \int_K f$: the net outflow of every triangle equals its source <em>exactly</em> (up to round-off and the
+quadrature of $f$). <b>Accuracy:</b> $\|u - u_h\|$ and $\|\bsigma - \bsigma_h\|$ both decrease like $h$; the distance of $u_h$ to the element means of $u$ even
+like $h^2$ (superconvergence).</p>
+
+<figure class="widget" id="w-rt0">
+<figcaption><b>The RT0 mixed solution.</b> Triangles are coloured by the piecewise-constant $u_h$, arrows show $\bsigma_h$ at the centroids (heat flows from
+warm to cold). On coarse meshes the numbers on the edges are the fluxes $\Sigma_E|E|$ in the direction of the small ticks ($\n_E$). Click a triangle:
+the readout lists the fluxes through its three edges (signed outward) and checks that their sum equals $\int_K f$.</figcaption>
+</figure>
+
+<h2 id="hybrid">Hybridization: tear the fluxes apart, glue them with multipliers</h2>
+<p>The saddle-point system is indefinite and couples everything. The trick of <b>hybridization</b> (Fraeijs de Veubeke 1965; Arnold &amp; Brezzi 1985) is
+counter-intuitive: <em>make the space larger</em>. Give every triangle its own three flux unknowns $\sigma_{K,k}$ (normal flux on its local edge $k$ w.r.t. its own
+outward normal), with no continuity between neighbours — a broken RT0 space. Then re-impose normal continuity weakly with a
+<b>Lagrange multiplier</b> $\lambda$ living on the edges:</p>
+<div class="box def">
+$$\begin{aligned}
+(\bsigma_h,\boldsymbol\tau)_K - (u_h,\nabla\cdot\boldsymbol\tau)_K + \langle\lambda_h,\boldsymbol\tau\cdot\n_K\rangle_{\partial K} &= 0 &&\forall\,\boldsymbol\tau\in RT_0(K),\\
+(\nabla\cdot\bsigma_h, v)_K &= (f, v)_K &&\forall\, v\in P_0(K),\\
+\textstyle\sum_{K\ni E}\langle\bsigma_h\cdot\n_K, \mu\rangle_E &= 0 &&\forall\,\mu\in P_0(E),
+\end{aligned}$$
+<p>the first two lines on every triangle $K$, the last one on every interior edge $E$; on boundary edges $\lambda_h = \frac1{|E|}\int_E g$.</p>
+</div>
+<p>The last line says $\bsigma_{K^-}\cdot\n_E = \bsigma_{K^+}\cdot\n_E$: the torn fluxes agree after all, and the solution coincides with the mixed RT0 solution
+(to round-off in the widget below and in the tests). <b>What is $\lambda$?</b> For the exact solution, integrating $(\bsigma,\boldsymbol\tau)_K = -(\nabla u,\boldsymbol\tau)_K$ by parts gives
+$(\bsigma,\boldsymbol\tau)_K - (u,\nabla\cdot\boldsymbol\tau)_K + \langle u,\boldsymbol\tau\cdot\n_K\rangle_{\partial K} = 0$. Comparing with the first line, $\lambda_h$ takes the place of $u$ on the
+element boundary: the multiplier <em>is</em> an approximation of $u$ on the edges (our tests measure $\lambda_E - \frac1{|E|}\int_E u = O(h^2)$ in a mesh-weighted edge norm).</p>
+
+<h3>Static condensation</h3>
+<p>Now the magic. For one triangle collect $\mathbf x_K = (\sigma_{K,0},\sigma_{K,1},\sigma_{K,2},u_K)$. The first two lines are a $4\times4$ system that only involves $K$ and the
+three multipliers on its edges:</p>
+$$D_K\,\mathbf x_K = \mathbf r_K - C_K\boldsymbol\lambda_K,\qquad D_K = \begin{pmatrix}A_K & -B_K^T\\ -B_K & 0\end{pmatrix},$$
+$$C_K = \begin{pmatrix}\mathrm{diag}(|E_0|,|E_1|,|E_2|)\\ 0\;\;0\;\;0\end{pmatrix},\qquad \mathbf r_K = \begin{pmatrix}\mathbf 0\\ -\int_K f\end{pmatrix},$$
+<p>where $A_K$ is the $3\times3$ RT0 mass matrix of $K$ and $B_K = (|E_0|, |E_1|, |E_2|)$ holds the integrals of the divergences.</p>
+<p>$D_K$ is a tiny invertible matrix, so the <b>local solver</b> $\mathbf x_K = D_K^{-1}(\mathbf r_K - C_K\boldsymbol\lambda_K)$ expresses all element unknowns through the
+multipliers. Inserting this into the continuity equations $\sum_K C_K^T\mathbf x_K = 0$ leaves a system for $\lambda$ alone:</p>
+<div class="box def">
+$$H\boldsymbol\lambda = \sum_K C_K^TD_K^{-1}\mathbf r_K,\qquad H = \sum_K C_K^T D_K^{-1}C_K .$$
+</div>
+<p>In block form this is Gaussian elimination of the element block from
+$\begin{pmatrix} D & C\\ C^T & 0\end{pmatrix}$, i.e. the <span class="term" data-g="schur">Schur complement</span> $0 - C^TD^{-1}C = -H$. Because $D$ is block diagonal, $D^{-1}$
+is computed one $4\times4$ block at a time — that is <span class="term" data-g="condensation">static condensation</span>. The result is remarkable:</p>
+<ul>
+<li>$H$ is <b>symmetric positive definite</b> (locally $C_K^TD_K^{-1}C_K$ is positive semidefinite with the constants as kernel; the Dirichlet edges remove them), so CG and
+all SPD machinery are back;</li>
+<li>it has one unknown per interior edge and each row couples an edge only to the other edges of its two triangles (at most 5 non-zeros per row);</li>
+<li>all element work (forming $D_K^{-1}$, recovering $\mathbf x_K$ afterwards) is embarrassingly parallel.</li>
+</ul>
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>A two-pass renderer. The expensive global pass runs only on the <em>wireframe</em> (the skeleton of edges); then every triangle is filled
+independently, like a fragment shader that only needs the values on its own three edges. Chapter 10 shows that domain decomposition uses the very same
+Schur-complement idea with whole subdomains instead of single triangles.</p>
+</div>
+
+<figure class="widget" id="w-condense">
+<figcaption><b>Static condensation, step by step</b> (spy plots of the monolithic hybridized system on a small mesh). Stage 0: unknowns ordered by
+field (all fluxes, then all $u$, then all multipliers). Stage 1: the same matrix, reordered element by element — the element block becomes block diagonal,
+coupled to $\lambda$ only through the border. Stage 2: eliminating the blocks leaves the Schur complement on the skeleton; entries that were zero before
+the elimination (“fill”) are highlighted. Press play to morph between the stages.</figcaption>
+</figure>
+
+<figure class="widget" id="w-hybrid">
+<figcaption><b>Hybridized RT0: the multipliers.</b> Left: every edge is drawn in the colour of its multiplier $\lambda_E$ on top of the faint $P_0$ solution — the
+skeleton alone already shows the solution. Right: $\lambda_E$ against the exact edge mean $\frac1{|E|}\int_E u$; the points lie on the diagonal.
+The readout compares with the mixed RT0 solution of the previous widget (difference = round-off) and reports the size of $H$.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>In the RT0 widget, click triangles near the peak of the Gaussian: large fluxes leave, but the balance $\sum$ outflow $= \int_K f$ always holds to round-off.</li>
+<li>Refine to $N=16$: the arrows (tangential component!) jump between neighbouring triangles, but the normal components never do.</li>
+<li>In the hybridization widget, compare the scatter for $N=4$ and $N=16$.</li>
+</ul>
+</div>
+
+<h2 id="hdg">HDG: hybridizing a discontinuous Galerkin method</h2>
+<p>The same tearing-and-gluing works for DG. Take the LDG idea from chapter 8 (flux $\mathbf q = -\nabla u$ as a second unknown, both discretised with
+discontinuous polynomials of degree $k$) and add a third unknown: the <b>numerical trace</b> $\hat u_h = \lambda_h$, a polynomial of degree $k$ on every edge.
+This is the <b>hybridizable DG</b> (HDG, or LDG-H) method of Cockburn, Gopalakrishnan and Lazarov. On every triangle $K$, for all test functions
+$\mathbf r\in P_k(K)^2$, $w\in P_k(K)$:</p>
+<div class="box def">
+$$\begin{aligned}
+(\mathbf q_h,\mathbf r)_K - (u_h,\nabla\cdot\mathbf r)_K + \langle\lambda_h,\mathbf r\cdot\n\rangle_{\partial K} &= 0,\\
+-(\mathbf q_h,\nabla w)_K + \langle\hat{\mathbf q}_h\cdot\n, w\rangle_{\partial K} &= (f, w)_K,\\
+\hat{\mathbf q}_h\cdot\n &= \mathbf q_h\cdot\n + \tau\,(u_h - \lambda_h)\quad\text{on }\partial K,
+\end{aligned}$$
+<p>and on every interior edge, for all $\mu\in P_k(E)$, the <b>transmission condition</b> $\sum_{K\ni E}\langle\hat{\mathbf q}_h\cdot\n_K,\mu\rangle_E = 0$ (the numerical flux is
+single-valued: conservation). On boundary edges $\lambda_h$ is the $L^2$ projection of $g$.</p>
+</div>
+<p><b>The sign of the stabilisation.</b> With our convention $\mathbf q = -\nabla u$ (heat flux), $\mathbf q\cdot\n$ is the <em>outflow</em>. If $u_h$ on the element boundary is
+higher than the trace $\lambda_h$, the term $\tau(u_h - \lambda_h) > 0$ adds outflow: heat leaves the hot element — a restoring, dissipative effect, which is why $\tau > 0$.
+(With the opposite convention $\mathbf q = +\nabla u$ the sign flips.) For $\tau = O(1)$ the method is stable for every $k$.</p>
+<p><b>Local solvers and the global system.</b> Exactly as for RT0: per element the first two equations form a small system ($3\dim P_k$ unknowns:
+$q_x, q_y, u$) with the edge traces as data; eliminating it and inserting into the transmission condition gives a global system for the trace coefficients
+only, again <b>symmetric positive definite</b> (verified in our tests for $k = 0,1,2$, $\tau = 1, 10$). Solving the condensed system and recovering element by element
+gives exactly the same answer as solving the large monolithic system.</p>
+<p><b>Superconvergence and post-processing.</b> For $\tau = O(1)$ and $k\ge1$, both $u_h$ and $\mathbf q_h$ converge with order $k+1$ — the flux is as accurate as the
+solution, unlike CG or IP-DG where the gradient loses one order. Moreover a cheap element-wise
+<b>post-processing</b> extracts one more order for $u$: find $u_h^\star\in P_{k+1}(K)$ with</p>
+$$(\nabla u_h^\star, \nabla w)_K = -(\mathbf q_h, \nabla w)_K\quad\forall w\in P_{k+1}(K),\qquad \int_K u_h^\star = \int_K u_h .$$
+<p>(The minus sign because $\mathbf q_h\approx-\nabla u$; the second condition fixes the constant, which the first cannot see.) Then $\|u - u_h^\star\| = O(h^{k+2})$.
+For $k = 0$ there is no such gain: everything converges with order 1.</p>
+
+<figure class="widget" id="w-hdg">
+<figcaption><b>An HDG solver.</b> Left: $u_h$ or the post-processed $u_h^\star$ (choose), with the traces $\lambda_h$ drawn as thin coloured strips along the edges.
+Right: errors of $u_h$, $\mathbf q_h$ and $u_h^\star$ for $N = 2, 4, 8, 16$ at the chosen $k$ and $\tau$, with reference slopes $k+1$ and $k+2$.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>$\tau = 0.01$: the error of $u_h$ grows by almost two orders of magnitude compared with $\tau = 1$ (for small $\tau$ it behaves like $1/\tau$), yet $\mathbf q_h$ and $u_h^\star$ hardly change.</li>
+<li>$\tau = 100$: now the flux $\mathbf q_h$ suffers, and $u_h^\star$ loses its extra order on these meshes. $\tau\approx 1$ (in units of the diffusivity over a length) is the sweet spot.</li>
+<li>Switch between $u_h$ and $u_h^\star$ for $k = 1$, $N = 4$: the post-processed solution is visibly smoother although it costs only a tiny local solve per triangle.</li>
+</ul>
+</div>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Edge orientation.</b> Both triangles see a shared edge, but traverse it in opposite directions (both are counter-clockwise). An edge polynomial
+written in the parameter $s$ of $K^-$ must be evaluated at $1-s$ from $K^+$; forgetting this silently couples the wrong points for $k\ge1$
+(for $k=0$ nothing happens, so low-order tests do not catch it).</li>
+<li><b>Signs.</b> The RT0 basis needs the per-element sign $s_{K,E}$; the HDG stabilisation sign depends on the flux convention. A wrong sign typically
+produces a perfectly plausible picture with an error that does not converge — always run a convergence test.</li>
+<li><b>Indefinite solvers.</b> Using CG on the saddle-point system of the mixed method fails (it is not positive definite). Hybridize first, or use a
+solver for indefinite systems.</li>
+</ul>
+</div>
+
+<h2 id="sizes">Counting the cost: CG vs SIPG vs HDG</h2>
+<p>How large is the system that is finally solved? On an $N\times N$ grid ($2N^2$ triangles, about $3N^2$ interior edges) with degree $p$:
+CG has about $p^2N^2$ unknowns, SIPG $N^2(p+1)(p+2)$, HDG $(p+1)$ per interior edge, about $3(p+1)N^2$. HDG's count grows only <em>linearly</em> in $p$ because
+all interior-of-element unknowns were condensed away; it has fewer unknowns than SIPG for every $p$ and fewer than CG from $p = 4$ on (on our meshes,
+fewer non-zeros from $p = 5$ on). Two caveats keep the comparison honest: CG can also condense its element-interior (bubble) unknowns, and the cost of the
+local solves grows with $p$ (Kirby, Sherwin &amp; Cockburn compare them in detail).</p>
+
+<figure class="widget" id="w-sizes">
+<figcaption><b>Global system size.</b> Unknowns or stored non-zeros of the system actually solved: CG (strong Dirichlet BCs, element-interior unknowns kept),
+SIPG, and HDG after static condensation, versus the degree $p$. The hybridized RT0 method ($p = 0$) has one unknown per interior edge.</figcaption>
+</figure>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>Mixed form $\bsigma = -\nabla u$, $\nabla\cdot\bsigma = f$: the flux is an unknown, Dirichlet data become natural, and $u$ is the Lagrange multiplier of conservation.</li>
+<li>The discrete problem is a symmetric indefinite saddle point; it is stable only if the spaces satisfy the inf–sup condition. RT0–P0 does.</li>
+<li>RT0: one unknown per edge = normal flux; basis $\pm\frac{|E|}{2|K|}(\mathbf x - \mathbf x_E)$; normal continuity by construction; exact conservation in every triangle.</li>
+<li>Hybridization: break normal continuity, enforce it with multipliers $\lambda$ on the skeleton; $\lambda$ approximates $u$ on edges; static condensation
+(Schur complement, element by element) leaves an SPD system on the edges only.</li>
+<li>HDG: hybridized DG with numerical trace $\hat u = \lambda$ and flux $\hat{\mathbf q}\cdot\n = \mathbf q\cdot\n + \tau(u - \lambda)$; order $k+1$ for $u$ and $\mathbf q$, $k+2$ after
+post-processing; the smallest global system among the DG methods.</li>
+</ul>
+
+<h2 id="references">References</h2>
+<ul>
+<li>B. Fraeijs de Veubeke, <i>Displacement and equilibrium models in the finite element method</i>, in: Stress Analysis, Wiley (1965).</li>
+<li>F. Brezzi, <i>On the existence, uniqueness and approximation of saddle-point problems arising from Lagrangian multipliers</i>, RAIRO Anal. Numér. 8 (1974).</li>
+<li>P.-A. Raviart, J.-M. Thomas, <i>A mixed finite element method for 2nd order elliptic problems</i>, Lecture Notes in Mathematics 606, Springer (1977).</li>
+<li>D. N. Arnold, F. Brezzi, <i>Mixed and nonconforming finite element methods: implementation, postprocessing and error estimates</i>, M2AN 19 (1985).</li>
+<li>R. Stenberg, <i>Postprocessing schemes for some mixed finite elements</i>, M2AN 25 (1991).</li>
+<li>B. Cockburn, J. Gopalakrishnan, R. Lazarov, <i>Unified hybridization of discontinuous Galerkin, mixed, and continuous Galerkin methods for second order elliptic problems</i>, SIAM J. Numer. Anal. 47 (2009).</li>
+<li>B. Cockburn, J. Gopalakrishnan, F.-J. Sayas, <i>A projection-based error analysis of HDG methods</i>, Math. Comp. 79 (2010).</li>
+<li>R. M. Kirby, S. J. Sherwin, B. Cockburn, <i>To CG or to HDG: a comparative study</i>, J. Sci. Comput. 51 (2012).</li>
+<li>D. Boffi, F. Brezzi, M. Fortin, <i>Mixed Finite Element Methods and Applications</i>, Springer (2013).</li>
+</ul>
+
+</main>
+</body>
+</html>

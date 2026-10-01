@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>8. DG for elliptic problems — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch08.js"></script>
+<style>
+  svg.ch8-faces { display: block; margin: 0.6rem auto 0.2rem; width: 100%; max-width: 560px; height: auto; color: var(--ink); }
+  svg.ch8-faces text { font: 15px var(--font-ui, sans-serif); fill: currentColor; }
+  svg.ch8-faces .km { fill: var(--accent); fill-opacity: 0.16; stroke: var(--ink-faint); }
+  svg.ch8-faces .kp { fill: var(--accent-2); fill-opacity: 0.16; stroke: var(--ink-faint); }
+  svg.ch8-faces .face { stroke: var(--accent-3); stroke-width: 4; }
+  svg.ch8-faces .nrm { stroke: var(--ink); stroke-width: 2; fill: none; }
+  .ch8-caption { text-align: center; font-size: 0.92em; color: var(--ink-soft); margin-top: 0; }
+</style>
+</head>
+<body data-chapter="08">
+<main class="content">
+
+<h1><span class="chapnum">8</span>DG for elliptic problems</h1>
+<p class="subtitle">Interior penalty methods: integrate by parts on every element, glue the pieces with Nitsche’s trick on every face,
+and make the glue strong enough.</p>
+
+<p class="lead">In chapter 6 discontinuous Galerkin (DG) methods handled <em>transport</em>: a numerical flux on each face decides what
+crosses it, and the upwind direction makes everything stable. Diffusion is different. The diffusive flux $-\nabla u$ involves a
+<em>derivative</em>, information flows in all directions, and there is no “upwind” side to trust. This chapter builds the most popular
+DG method for the Poisson equation $-\Delta u = f$, the <span class="term" data-g="sipg">symmetric interior penalty Galerkin (SIPG)</span>
+method, derives every term from scratch, and shows experimentally why its penalty parameter must be large enough — and why it must grow like $p^2/h$.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$-\Delta u = f$, $u = g$ on $\partial\Omega$</td><td>model problem (Poisson with Dirichlet data), $\Omega$ = unit square</td></tr>
+<tr><td>$\Th$, $K$, $|K|$</td><td>triangulation, a triangle, its area</td></tr>
+<tr><td>$\mathcal F_h = \mathcal F_h^{i}\cup\mathcal F_h^{\partial}$</td><td>all edges (“faces”): interior ones and boundary ones; $|F|$ = length of edge $F$</td></tr>
+<tr><td>$K^-$, $K^+$, $\n$</td><td>the two triangles sharing an interior face $F$; $\n$ = unit normal of $F$ pointing <em>out of</em> $K^-$ into $K^+$</td></tr>
+<tr><td>$v^\pm$</td><td>the value of $v$ on $F$ seen from $K^\pm$ (the trace)</td></tr>
+<tr><td>$\jump{v} = v^- - v^+$, $\avg{w} = \tfrac12(w^-+w^+)$</td><td><span class="term" data-g="jump">jump</span> and <span class="term" data-g="average">average</span> on interior faces; on boundary faces $\jump{v} = v$, $\avg{w} = w$, $\n$ = outward normal</td></tr>
+<tr><td>$\partial_n v^\pm = \nabla v^\pm\cdot\n$</td><td>normal derivative, both sides measured with the <em>same</em> $\n$</td></tr>
+<tr><td>$V_h^p$</td><td>the <span class="term" data-g="broken">broken space</span> of piecewise polynomials of degree $\le p$, no continuity</td></tr>
+<tr><td>$\sigma_F$, $C_{IP}$, $h_F$</td><td>penalty on face $F$, its user-chosen constant, and the local mesh size $h_F = 2\min(|K^-|,|K^+|)/|F|$</td></tr>
+<tr><td>$\theta \in \{1, -1, 0\}$</td><td>selects SIPG, NIPG or IIPG</td></tr>
+</table>
+</div>
+
+<h2 id="why">Why bother? Continuous elements already work</h2>
+<p>For the Poisson equation alone, continuous finite elements (chapter 3) are hard to beat. The reasons for a DG discretisation of the
+Laplacian are elsewhere:</p>
+<ul>
+<li><b>Diffusion inside a DG flow solver.</b> The Navier–Stokes equations are the Euler equations (chapter 6: DG, numerical fluxes) <em>plus</em> viscous
+terms $\nabla\cdot(\mu\nabla\mathbf u)$. The unknowns already live in a discontinuous space, so we need a DG treatment of $-\Delta$ in that same space.</li>
+<li><b>Flexibility.</b> Every element carries its own polynomial: the degree $p$ may change from element to element, and meshes may have
+<em>hanging nodes</em> (a big triangle next to two small ones), because nothing must match across faces.</li>
+<li><b>Locality.</b> The mass matrix is block diagonal (here even diagonal, see below), all couplings go through faces, data layouts are regular — ideal for GPUs (chapter 12).</li>
+<li><b>Weak boundary conditions</b> come for free: the same face terms that glue elements also impose $u=g$ (Nitsche, chapter 4).</li>
+</ul>
+<p>But the naive idea fails completely. Take the usual weak form $\int_\Omega\nabla u\cdot\nabla v = \int_\Omega fv$ and simply allow $u_h, v_h$ to be
+discontinuous. Then $\int_\Omega \nabla u_h\cdot\nabla v_h = \sum_K\int_K\nabla u_h\cdot\nabla v_h$ couples nothing across faces: the matrix is block
+diagonal, one block per triangle, and every block is singular (a constant on $K$ has zero gradient). The elements do not talk to each other and
+nothing tells them the boundary values. The fix must come from <em>face terms</em>, and we will derive exactly which ones.</p>
+
+<h2 id="broken">Broken spaces, jumps and averages</h2>
+<p>The DG space is the <b>broken polynomial space</b></p>
+$$V_h^p = \{\, v \in L^2(\Omega) \;:\; v|_K \in \mathbb P_p(K) \text{ for every } K\in\Th \,\},$$
+$$\dim V_h^p = |\Th|\cdot\frac{(p+1)(p+2)}{2},$$
+<p>where $\mathbb P_p$ are polynomials of total degree $\le p$ in $(x,y)$. Each triangle owns its own coefficients — like a
+“triangle soup” in graphics, where every triangle has private copies of its vertices instead of sharing them. We use the orthonormal
+<b>Dubiner basis</b> $\psi_0,\dots,\psi_{n-1}$ on the reference triangle (the same modal basis as in chapter 6): with the affine map
+$\mathbf x = \mathbf a + J\hat{\mathbf x}$ of each triangle, $\int_K\psi_i\psi_j = \det J\,\delta_{ij} = 2|K|\,\delta_{ij}$, so the mass matrix is diagonal.</p>
+
+<p>On a face $F$ shared by $K^-$ and $K^+$, a broken function has <em>two</em> values (traces) $v^-$ and $v^+$. We combine them into</p>
+$$\jump{v} = v^- - v^+, \qquad \avg{w} = \tfrac12\,(w^- + w^+),$$
+<p>and we measure normal derivatives on both sides with the same normal $\n$ (out of $K^-$): $\partial_n v^\pm = \nabla v^\pm\cdot\n$.
+Which triangle is called “minus” is arbitrary; every face term below contains products like $\avg{\partial_n u}\,\jump{v}$ in which swapping the
+roles of $K^\pm$ flips <em>both</em> $\n$ and $\jump{v}$, so the product does not change.</p>
+
+<svg class="ch8-faces" viewBox="0 0 560 230" role="img" aria-label="Two triangles K minus and K plus sharing a face F, with the normal n pointing from K minus into K plus">
+  <defs><marker id="ch8arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="currentColor"/></marker></defs>
+  <polygon class="km" points="70,200 280,20 280,200"/>
+  <polygon class="kp" points="280,20 490,110 280,200"/>
+  <line class="face" x1="280" y1="20" x2="280" y2="200"/>
+  <line class="nrm" x1="280" y1="110" x2="350" y2="110" marker-end="url(#ch8arr)"/>
+  <text x="185" y="160">K⁻</text><text x="350" y="160">K⁺</text>
+  <text x="357" y="105">n</text><text x="288" y="40">F</text>
+  <text x="200" y="98">u⁻ = u|K⁻</text><text x="300" y="80">u⁺ = u|K⁺</text>
+</svg>
+<p class="ch8-caption">An interior face $F$: $\n$ points out of $K^-$. On $F$ the jump is $\jump{u} = u^- - u^+$, the average $\avg{u} = \frac12(u^-+u^+)$.</p>
+
+<h2 id="derivation">Deriving the interior penalty method</h2>
+<p><b>Step 1 — integrate by parts element by element.</b> Multiply $-\Delta u = f$ by a test function $v\in V_h^p$ and integrate over one triangle $K$.
+Green's formula (chapter 0) on $K$ with its outward normal $\n_K$ gives
+$\int_K\nabla u\cdot\nabla v - \int_{\partial K}(\nabla u\cdot\n_K)\,v = \int_K f v$. Summing over all triangles:</p>
+$$\sum_{K}\int_K \nabla u\cdot\nabla v \;-\; \sum_K\int_{\partial K} (\nabla u\cdot\n_K)\, v \;=\; \int_\Omega f v .$$
+<p><b>Step 2 — rewrite the element boundaries as a sum over faces.</b> Every interior face $F$ appears twice: once from $K^-$ with
+$\n_{K^-} = \n$ and once from $K^+$ with $\n_{K^+} = -\n$. Together they contribute $\int_F\big(v^-\,\partial_n u^- - v^+\,\partial_n u^+\big)$.
+For any four numbers, $a^-b^- - a^+b^+ = (a^- - a^+)\,\tfrac{b^-+b^+}{2} + \tfrac{a^-+a^+}{2}\,(b^- - b^+)$ (multiply out to check), hence</p>
+<div class="box def">
+$$\begin{aligned}\sum_K\int_{\partial K} v\;\nabla u\cdot\n_K \;=\; &\sum_{F\in\mathcal F_h^{i}}\int_F\Big(\jump{v}\,\avg{\partial_n u} + \avg{v}\,\jump{\partial_n u}\Big)\\ &+\; \sum_{F\in\mathcal F_h^{\partial}}\int_F v\;\partial_n u .\end{aligned}$$
+<p>With the boundary conventions $\jump{v} = v$, $\avg{w} = w$ on $\mathcal F_h^\partial$, the last sum is just the first term over boundary faces.</p>
+</div>
+<p><b>Step 3 — use what we know about the exact solution.</b> If $u$ is smooth enough ($u\in H^2$), then $u$ <em>and</em> its normal flux are continuous
+across every interior face: $\jump{u} = 0$ and $\jump{\partial_n u} = 0$. The $\avg{v}\jump{\partial_n u}$ term disappears and the exact solution satisfies</p>
+$$\sum_K\int_K\nabla u\cdot\nabla v \;-\; \sum_{F\in\mathcal F_h}\int_F \avg{\partial_n u}\,\jump{v} \;=\; \int_\Omega f v \qquad\text{for all } v\in V_h^p. \tag{$*$}$$
+<p>This is already a candidate method — but its matrix is not symmetric and, worse, not stable. Two more terms are added, both chosen so that the
+exact solution still satisfies the equation (<b>consistency</b>):</p>
+<p><b>Step 4 — symmetrise.</b> Add $-\theta\sum_F\int_F\avg{\partial_n v}\,\jump{u}$. For the exact solution $\jump{u} = 0$ on interior faces, and
+$\jump{u} = u = g$ on boundary faces, so the same quantity $-\theta\sum_{F\in\mathcal F_h^\partial}\int_F \partial_n v\, g$ goes to the right-hand side.
+With $\theta = 1$ the bilinear form becomes symmetric in $u$ and $v$.</p>
+<p><b>Step 5 — penalise jumps.</b> Add $\sum_F\sigma_F\int_F\jump{u}\jump{v}$, again zero on interior faces for the exact solution and equal to
+$\sum_{F\in\mathcal F_h^\partial}\sigma_F\int_F g\,v$ on the boundary. This term is the “glue”: it punishes $u_h$ for jumping.</p>
+
+<div class="box def">
+<span class="box-title">Interior penalty DG (IPDG)</span>
+<p>Find $u_h\in V_h^p$ such that $a_h(u_h, v) = \ell_h(v)$ for all $v\in V_h^p$, where</p>
+$$\begin{aligned}a_h(u,v) = &\sum_K\int_K\nabla u\cdot\nabla v \;-\; \sum_{F\in\mathcal F_h}\int_F\Big(\avg{\partial_n u}\jump{v} + \theta\,\avg{\partial_n v}\jump{u}\Big)\\ &+\; \sum_{F\in\mathcal F_h}\sigma_F\int_F\jump{u}\jump{v},\end{aligned}$$
+$$\ell_h(v) = \int_\Omega f v \;+\; \sum_{F\in\mathcal F_h^\partial}\int_F\big(\sigma_F\, v - \theta\,\partial_n v\big)\,g .$$
+<p>$\theta = 1$: <b>SIPG</b> (symmetric), $\theta = -1$: <b>NIPG</b> (non-symmetric), $\theta = 0$: <b>IIPG</b> (incomplete). Our penalty is
+$$\sigma_F = C_{IP}\,\frac{(p+1)(p+2)}{2}\,\frac{|F|}{\min(|K^-|,|K^+|)} = C_{IP}\,\frac{(p+1)(p+2)}{h_F},$$
+with $h_F = 2\min(|K^-|,|K^+|)/|F|$ ($h_F$ is the smaller height of the two triangles over $F$; on boundary faces only $K^-$ counts).</p>
+</div>
+
+<p>Because the exact solution satisfies $a_h(u, v) = \ell_h(v)$, subtracting the discrete equation gives <b>Galerkin orthogonality</b> $a_h(u - u_h, v) = 0$
+for all $v\in V_h^p$. A quick consequence (and a good unit test): if the exact solution is itself a polynomial of degree $\le p$, it lies in $V_h^p$
+and IPDG reproduces it exactly, up to round-off — for all three variants.</p>
+
+<h2 id="nitsche">Penalty = Nitsche’s method on every face</h2>
+<p>Look at a boundary face. The face terms read
+$-\int_F\partial_n u\, v - \theta\int_F\partial_n v\,(u - g) + \sigma_F\int_F (u-g)\,v$ — exactly <span class="term" data-g="nitsche">Nitsche’s method</span>
+for the Dirichlet condition $u = g$ from <a href="04-boundary-conditions.html">chapter 4</a>: the consistency term, the symmetry term and the
+penalty $\gamma/h$. On an interior face the same three terms appear with $u - g$ replaced by $\jump{u} = u^- - u^+$: each triangle treats the
+neighbour's trace as “Dirichlet data” for itself, weakly. SIPG is Nitsche's method applied on every face of the mesh, and the boundary
+condition is just the special case where the neighbour is the data $g$.</p>
+<p>The difference to a pure <span class="term" data-g="penalty">penalty method</span> (only $\sigma_F\int\jump{u}\jump{v}$) is the same as in chapter 4:
+without the consistency term $\avg{\partial_n u}\jump{v}$ the exact solution does not satisfy the discrete equations, and one must let $\sigma_F\to\infty$
+to converge, which ruins the conditioning.</p>
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Welding a triangle soup. Every triangle has private vertex copies; the penalty is a spring between coincident copies (a soft constraint, as in
+a physics engine). Springs alone either let the mesh “crack” (too soft) or make the system stiff (too hard). Nitsche's extra terms are what a
+physicist would call the <em>consistent</em> constraint force: the exact, continuous solution feels no spring force at all, so the springs only need
+to be stiff enough to keep the discrete system stable — not infinitely stiff.</p>
+</div>
+
+<figure class="widget" id="w-sipg">
+<figcaption><b>An interior penalty solver.</b> Left: the DG solution $u_h$ rendered exactly per pixel (each triangle is its own polynomial);
+the mesh edges are coloured by the size of the jump $\jump{u_h}$ (RMS over the edge; on the boundary $u_h - g$). Right: a horizontal cut
+through the solution — every triangle crossed by the line is a separate curve, so the discontinuities are visible as small gaps.
+The readout shows the smallest eigenvalue of the symmetric part $\tfrac12(A+A^T)$ of the matrix: positive means
+$a_h(v,v) > 0$ for all $v\ne0$ (coercive), negative means there is a function with negative “energy”.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Lower $C_{IP}$ below about $0.3$ with SIPG: $\lambda_{\min}$ turns negative. Go further and vary $N$: the error becomes erratic.
+With $p = 1$, $N = 12$, $C_{IP} = 0.05$ the $L^2$ error exceeds $10$ (the matrix is nearly singular), while neighbouring meshes may look harmless —
+an indefinite discretisation gives no guarantee at all.</li>
+<li>Raise $C_{IP}$ to $100$: the jumps shrink (the colour of the edges fades) and $u_h$ approaches the continuous FE solution, but the matrix gets stiffer.</li>
+<li>Switch to NIPG and lower $C_{IP}$: $\lambda_{\min}$ of the symmetric part stays positive for <em>every</em> $C_{IP} > 0$. The section below explains why.</li>
+<li>Try the Gaussian peak with $p = 1$ vs $p = 3$ on the same mesh.</li>
+</ul>
+</div>
+
+<h2 id="variants">SIPG, NIPG and IIPG</h2>
+<p>The three variants differ only in the sign of the symmetrisation term. Put $u = v$ in $a_h$:</p>
+$$a_h(v,v) = \sum_K\|\nabla v\|_K^2 \;-\; (1+\theta)\sum_F\int_F\avg{\partial_n v}\jump{v} \;+\; \sum_F\sigma_F\|\jump{v}\|_F^2 .$$
+<ul>
+<li><b>NIPG</b> ($\theta = -1$): the middle term vanishes, $a_h(v,v) = \sum_K\|\nabla v\|^2_K + \sum_F\sigma_F\|\jump v\|^2_F$, which is positive for every
+$v\ne 0$ as soon as all $\sigma_F > 0$ (if it is zero, $v$ is constant on each triangle, continuous across faces and zero on $\partial\Omega$, so $v=0$).
+NIPG is coercive for <em>any</em> positive penalty.</li>
+<li><b>SIPG</b> ($\theta = 1$): the middle term has the factor $2$ and no sign — it must be dominated by the penalty. In exchange the matrix is
+symmetric, so it is SPD when the penalty is large enough and conjugate gradients (chapter 3) apply.</li>
+<li><b>IIPG</b> ($\theta = 0$): factor $1$, non-symmetric; simplest to implement.</li>
+</ul>
+<p>All three converge in the DG energy norm $|||v|||^2 = \sum_K\|\nabla v\|_K^2 + \sum_F\sigma_F\|\jump v\|_F^2$ with the optimal rate $h^p$. In $L^2$
+only SIPG is optimal, $h^{p+1}$, for every $p$: its symmetry makes the method <em>adjoint consistent</em>, so the duality argument
+(Aubin–Nitsche, chapter 3) gains one extra power of $h$. NIPG and IIPG are not adjoint consistent; in our experiments they still reach $h^{p+1}$
+for odd $p$ ($p = 1, 3$) but only $h^p$ for $p = 2$ — the classical even-degree suboptimality. With a large penalty the jumps are tiny and the
+loss only becomes visible on fine meshes.</p>
+
+<figure class="widget" id="w-conv">
+<figcaption><b>Convergence study, live.</b> For the chosen $p$ and $C_{IP}$ the three variants are solved on meshes with $N = 2,4,8,16$ (and $32$ for
+$p \le 2$) squares per side ($2N^2$ triangles, mildly perturbed vertices). Left: $L^2$ error; right: DG energy error; the triangles show the slopes
+$p+1$ and $p$. The table lists the observed rates between consecutive meshes. Default: $p = 2$, $C_{IP} = 1$ — watch NIPG and IIPG drift towards
+slope $2$ in $L^2$ while SIPG keeps slope $3$.</figcaption>
+</figure>
+
+<h2 id="coercivity">Why the penalty must be large (and scale like p²/h)</h2>
+<p>For SIPG, $a_h(v,v)$ contains the indefinite term $-2\sum_F\int_F\avg{\partial_n v}\jump{v}$. With Cauchy–Schwarz and Young's inequality
+$2ab \le \delta a^2 + b^2/\delta$ (for any $\delta > 0$),</p>
+$$2\Big|\int_F\avg{\partial_n v}\jump{v}\Big| \;\le\; \delta_F\,\|\avg{\partial_n v}\|_F^2 + \frac{1}{\delta_F}\|\jump v\|_F^2 .$$
+<p>The first term must be paid for by $\sum_K\|\nabla v\|_K^2$, the second by the penalty. So the question is: how large can the normal derivative
+of a polynomial be <em>on an edge</em>, compared with its size <em>inside the element</em>? That is a <b>trace inequality</b>.</p>
+<p><b>The 1D answer is explicit.</b> Let $L_j = \sqrt{(2j+1)/2}\,P_j$ be the orthonormal Legendre polynomials on $[-1,1]$, with $P_j(1) = 1$. A polynomial
+$w = \sum_{j\le p} c_j L_j$ has $\|w\|^2 = \sum_j c_j^2$ and $w(1) = \sum_j c_j\sqrt{(2j+1)/2}$, so by Cauchy–Schwarz</p>
+$$w(1)^2 \le \Big(\sum_{j=0}^p c_j^2\Big)\Big(\sum_{j=0}^p\frac{2j+1}{2}\Big) = \frac{(p+1)^2}{2}\,\|w\|^2_{L^2(-1,1)},$$
+<p>with equality for $c_j\propto\sqrt{(2j+1)/2}$. On an interval of length $h$ this becomes $w(\text{end})^2 \le \frac{(p+1)^2}{h}\|w\|^2$:
+a polynomial of degree $p$ can pile up near an endpoint, and the larger $p$ the more it can. On triangles the sharp analogue (Warburton &amp; Hesthaven) is</p>
+$$\|w\|_F^2 \;\le\; \frac{(p+1)(p+2)}{2}\,\frac{|F|}{|K|}\,\|w\|_K^2 \qquad (w\in\mathbb P_p(K)),$$
+<p>which is exactly the factor in our $\sigma_F$. Applying it to $\nabla v\in\mathbb P_{p-1}$ and choosing $\delta_F\sim h_F/p^2$ gives</p>
+$$a_h(v,v) \;\ge\; \tfrac12\sum_K\|\nabla v\|_K^2 + \sum_F\Big(\sigma_F - c_\star\frac{p^2}{h_F}\Big)\|\jump v\|_F^2,$$
+<p>with a constant $c_\star$ that depends only on the shape of the triangles. SIPG is coercive once $\sigma_F$ beats $c_\star p^2/h_F$ — the penalty
+must scale like $p^2/h$. With our normalisation, the critical constant $C_{IP}^\star$ (where $\lambda_{\min}$ changes sign) is about $0.33$–$0.6$ for
+$p = 1,2,3$ and essentially <em>independent of the mesh size</em>; the widget measures it.</p>
+
+<figure class="widget" id="w-coercive">
+<figcaption><b>Coercivity, measured.</b> Top left: the number of negative eigenvalues of the SIPG matrix on a small mesh (8 triangles) as $C_{IP}$
+sweeps from $0.01$ to $100$; the dashed line is the critical value $C^\star$ (found by bisection; negative eigenvalues are counted without computing them, as the
+negative pivots of an $LDL^T$ factorisation — Sylvester's law of inertia). Top right: the eigenvector of the
+smallest eigenvalue at the current $C_{IP}$ — the “most dangerous” function, with large jumps. Bottom left: the 1D polynomial with the largest
+endpoint value for its $L^2$ norm. The table computes $C^\star$ on meshes with $N = 2, 3, 4$ for three penalty scalings: only $\sigma_F\propto(p+1)(p+2)/h_F$
+gives a threshold that stays put when the mesh is refined <em>and</em> changes much less with $p$ than the alternatives.</figcaption>
+</figure>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<ul>
+<li><b>Penalty too small</b> (SIPG/IIPG): the matrix is indefinite or even singular, CG breaks down, and the solution can be garbage. Because the
+threshold depends on $p$ and on the element shapes (thin triangles have small $h_F$), a fixed $\sigma_F = 10/h_F$ that is safe
+for $p = 1, 2$ is no longer coercive for $p = 3$ (see the table in the widget above: without the $p$-factor the critical constant grows like $p(p+1)$).</li>
+<li><b>Penalty too large</b>: still convergent (the method is consistent), but the largest eigenvalues grow proportionally to $\sigma_F$, so the condition
+number and the number of CG iterations grow, and the jumps are suppressed so strongly that DG loses its flexibility.</li>
+<li><b>Sign conventions</b>: mixing “$\n$ out of $K^-$” with “$\jump{v} = v^+ - v^-$” flips the sign of the consistency term; the exact solution then no
+longer satisfies the discrete equations and the method is wrong, often without any visible warning on coarse meshes. Fix the conventions once
+(here: AGENTS.md) and test with a polynomial solution, which a consistent method must reproduce to round-off.</li>
+</ul>
+</div>
+
+<h2 id="cost">The price of discontinuity: unknowns and non-zeros</h2>
+<p>DG pays for its flexibility with more unknowns: every triangle stores $(p+1)(p+2)/2$ coefficients, while continuous elements share vertex and edge
+nodes. On an $N\times N$ grid split into $2N^2$ triangles, CG of degree $p$ with strong Dirichlet conditions has $(pN-1)^2$ unknowns, SIPG has
+$N^2(p+1)(p+2)$. For $p = 1$ that is $6N^2/(N-1)^2$, i.e. six to eight times more on moderate meshes; for large $N$ the ratio
+approaches $(p+1)(p+2)/p^2$, which decreases towards $1$ as $p$ grows. Each DG row couples
+one triangle to itself and its three neighbours, so the number of matrix non-zeros grows like $4\cdot\big((p+1)(p+2)/2\big)^2$ per triangle.</p>
+
+<figure class="widget" id="w-dofs">
+<figcaption><b>System size: CG vs DG.</b> Number of unknowns and of stored matrix non-zeros for continuous $\mathbb P_p$ elements (interior DOFs only)
+and for SIPG on the same mesh, as functions of $p$. Counts come from the actual connectivity of the mesh (every pair of unknowns that share
+an element or a face).</figcaption>
+</figure>
+
+<h3>A word on LDG</h3>
+<p>Interior penalty is not the only option. The <b>local discontinuous Galerkin (LDG)</b> method (Cockburn &amp; Shu) introduces the flux
+$\boldsymbol\sigma = -\nabla u$ as a second unknown, writes $-\Delta u = f$ as the first-order system $\boldsymbol\sigma + \nabla u = 0$, $\nabla\cdot\boldsymbol\sigma = f$, and
+discretises <em>both</em> equations with DG and numerical fluxes, exactly like chapter 6. Because $\boldsymbol\sigma$ can be eliminated element by element,
+LDG also ends up as a system for $u$ only. Arnold, Brezzi, Cockburn and Marini showed that IP, LDG and many other DG methods for diffusion are
+all instances of one framework, distinguished by their choice of numerical fluxes. Chapter 9 takes this first-order viewpoint further:
+mixed methods, hybridization and HDG.</p>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>A broken polynomial space alone does not discretise $-\Delta u$: the elements decouple. Face terms are needed.</li>
+<li>Element-wise integration by parts + the identity $\sum_K\int_{\partial K}v\,\partial_{n_K}u = \sum_F\int_F(\jump v\avg{\partial_n u} + \avg v\jump{\partial_n u})$
+gives the consistency term $-\int_F\avg{\partial_n u}\jump v$.</li>
+<li>Adding $-\theta\int_F\avg{\partial_n v}\jump u$ and $\sigma_F\int_F\jump u\jump v$ keeps consistency; it is Nitsche's method on every face. Boundary
+conditions are the special case “neighbour = data $g$”.</li>
+<li>SIPG ($\theta=1$): symmetric, optimal in $L^2$, needs $\sigma_F \gtrsim p^2/h_F$. NIPG ($\theta=-1$): coercive for any $\sigma_F>0$, but loses an order
+in $L^2$ for even $p$. IIPG ($\theta = 0$) behaves like NIPG in $L^2$.</li>
+<li>The $p^2/h$ scaling comes from polynomial trace inequalities: polynomials can concentrate near edges.</li>
+<li>DG has more unknowns and non-zeros than CG — the motivation for hybridization in chapter 9.</li>
+</ul>
+
+<h2 id="references">References</h2>
+<ul>
+<li>J. Nitsche, <i>Über ein Variationsprinzip zur Lösung von Dirichlet-Problemen bei Verwendung von Teilräumen, die keinen Randbedingungen unterworfen sind</i>, Abh. Math. Sem. Univ. Hamburg 36 (1971).</li>
+<li>M. F. Wheeler, <i>An elliptic collocation-finite element method with interior penalties</i>, SIAM J. Numer. Anal. 15 (1978).</li>
+<li>D. N. Arnold, <i>An interior penalty finite element method with discontinuous elements</i>, SIAM J. Numer. Anal. 19 (1982).</li>
+<li>B. Rivière, M. F. Wheeler, V. Girault, <i>A priori error estimates for finite element methods based on discontinuous approximation spaces for elliptic problems</i>, SIAM J. Numer. Anal. 39 (2001).</li>
+<li>D. N. Arnold, F. Brezzi, B. Cockburn, L. D. Marini, <i>Unified analysis of discontinuous Galerkin methods for elliptic problems</i>, SIAM J. Numer. Anal. 39 (2002).</li>
+<li>B. Cockburn, C.-W. Shu, <i>The local discontinuous Galerkin method for time-dependent convection–diffusion systems</i>, SIAM J. Numer. Anal. 35 (1998).</li>
+<li>T. Warburton, J. S. Hesthaven, <i>On the constants in hp-finite element trace inverse inequalities</i>, Comput. Methods Appl. Mech. Engrg. 192 (2003).</li>
+<li>K. Shahbazi, <i>An explicit expression for the penalty parameter of the interior penalty method</i>, J. Comput. Phys. 205 (2005).</li>
+<li>B. Rivière, <i>Discontinuous Galerkin Methods for Solving Elliptic and Parabolic Equations: Theory and Implementation</i>, SIAM (2008).</li>
+<li>D. A. Di Pietro, A. Ern, <i>Mathematical Aspects of Discontinuous Galerkin Methods</i>, Springer (2012).</li>
+</ul>
+
+</main>
+</body>
+</html>
