@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>0. Primer — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch00.js"></script>
+</head>
+<body data-chapter="00">
+<main class="content">
+
+<h1><span class="chapnum">0</span>Primer: fields, divergence &amp; convergence</h1>
+<p class="subtitle">The handful of vector-calculus ideas the rest of the course is built on, explained with graphics analogies — and how to read a convergence plot.</p>
+
+<p class="lead">A <span class="term" data-g="pde">partial differential equation</span> (PDE) relates an unknown function of
+several variables to its derivatives. Heat conduction, fluid flow, elasticity, electrostatics and light transport are all described by PDEs.
+Almost none of them can be solved with pen and paper on realistic geometries, so we <em>discretise</em> them:
+replace the unknown function by finitely many numbers and the PDE by a (large) system of algebraic equations.
+This primer collects the mathematical vocabulary we need for that. If you know the divergence theorem and log–log plots,
+skim the notation box and move on.</p>
+
+<div class="box notation">
+<span class="box-title">Notation used throughout the course</span>
+<table class="notation-table">
+<tr><td>$\mathbf x = (x, y)$</td><td>a point in the plane $\R^2$ (we work in 2D; 3D is analogous)</td></tr>
+<tr><td>$\Omega$, $\partial\Omega$</td><td>the <span class="term" data-g="domain">domain</span> (an open region of the plane) and its boundary curve</td></tr>
+<tr><td>$\mathbf n$</td><td>the <span class="term" data-g="normal">outward unit normal</span> on a boundary: length 1, perpendicular to the boundary, pointing out</td></tr>
+<tr><td>$u(\mathbf x)$</td><td>a <em>scalar field</em>: one number per point (temperature, density, height, …)</td></tr>
+<tr><td>$\mathbf F(\mathbf x) = (F_x, F_y)$</td><td>a <em>vector field</em>: one arrow per point (velocity, heat flux, …)</td></tr>
+<tr><td>$\partial_x u = \dfrac{\partial u}{\partial x} = u_x$</td><td>partial derivative: differentiate w.r.t. $x$ keeping $y$ fixed (three common spellings)</td></tr>
+<tr><td>$\int_\Omega g \dd\mathbf x$</td><td>area integral of $g$ over $\Omega$ (sometimes written $\int_\Omega g\,\mathrm dA$)</td></tr>
+<tr><td>$\int_{\partial\Omega} g \dd s$</td><td>line integral over the boundary, $\mathrm ds$ = arc-length element</td></tr>
+<tr><td>$h$, $p$</td><td>mesh size (cell width) and polynomial degree of a discretisation</td></tr>
+<tr><td>$u_h$</td><td>a discrete (computed) approximation of $u$ on a mesh of size $h$</td></tr>
+</table>
+</div>
+
+<h2 id="fields">Scalar fields, gradients and level sets</h2>
+
+<p>A <b>scalar field</b> $u:\Omega\to\R$ assigns a number to every point: think of a grey-scale image, a height map or a
+temperature distribution. Its <span class="term" data-g="gradient">gradient</span> collects the two partial derivatives into a vector,</p>
+$$\nabla u = \begin{pmatrix} \partial_x u \\ \partial_y u \end{pmatrix}.$$
+<p>Two facts make the gradient geometric:</p>
+<ul>
+<li>$\nabla u$ points in the direction in which $u$ increases fastest, and its length $|\nabla u|$ is that rate of increase
+(directional derivative: $\partial u/\partial \mathbf d = \nabla u\cdot\mathbf d$ for a unit vector $\mathbf d$).</li>
+<li>$\nabla u$ is perpendicular to the <b>level sets</b> (contour lines) $\{u = c\}$, because along a contour $u$ does not change.</li>
+</ul>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Bump mapping computes shading normals from the gradient of a height map; the contour lines below are extracted with
+<em>marching squares</em>, the 2D cousin of marching cubes. A level set $\{\phi = 0\}$ of a signed distance function is
+exactly how we will describe curved geometry in the chapter on <a href="11-immersed.html">immersed methods</a>.</p>
+</div>
+
+<figure class="widget" id="w-gradient">
+<figcaption><b>Gradient explorer.</b> Colour shows $u$ (or its Laplacian), white curves are level sets, black arrows are
+$\nabla u$. Click or drag to move the orange probe; the read-out shows the values at the probe. Notice that the arrows always
+cross the contours at right angles and are longest where the contours are densest.</figcaption>
+</figure>
+
+<h3>The Laplacian</h3>
+<p>Taking the divergence (next section) of the gradient gives the <span class="term" data-g="laplacian">Laplacian</span></p>
+$$\Delta u = \nabla\cdot\nabla u = \partial_{xx} u + \partial_{yy} u .$$
+<p>It measures how much $u$ at a point differs from the average of $u$ around it. On a grid with spacing $h$ the classic
+approximation is</p>
+$$\Delta u(x,y) \approx \frac{u(x{+}h,y) + u(x{-}h,y) + u(x,y{+}h) + u(x,y{-}h) - 4u(x,y)}{h^2},$$
+<p>i.e. (average of the four neighbours − centre value) × $4/h^2$ — the same "umbrella operator" used for mesh smoothing.
+Functions with $\Delta u = 0$ are called <em>harmonic</em>: they equal the average of their surroundings, have no interior
+maxima or minima, and are as smooth as possible (try the <em>saddle</em> and <em>plane</em> fields with "colour shows Δu").
+The <b>Poisson equation</b> $-\Delta u = f$ will be our model elliptic PDE: it describes the steady temperature in a plate heated by $f$.</p>
+
+<h2 id="divergence">Vector fields, divergence and the divergence theorem</h2>
+
+<p>A <b>vector field</b> $\mathbf F:\Omega\to\R^2$ attaches an arrow to every point, like a velocity field or a flow map texture.
+Its <span class="term" data-g="divergence">divergence</span> is the scalar field</p>
+$$\nabla\cdot\mathbf F = \partial_x F_x + \partial_y F_y .$$
+<p>Why this combination? Put a tiny square of side $h$ centred at $\mathbf x$ into the field and add up how much "stuff"
+the field carries <em>out</em> through its four sides. Through the right side (normal $(1,0)$) the outflow is about
+$F_x(x{+}\tfrac h2, y)\,h$; through the left side (normal $(-1,0)$) it is $-F_x(x{-}\tfrac h2,y)\,h$. Together,</p>
+$$\big(F_x(x{+}\tfrac h2,y) - F_x(x{-}\tfrac h2,y)\big)h \approx \partial_x F_x\, h^2,$$
+<p>and the top/bottom sides contribute $\partial_y F_y\,h^2$. So <b>divergence = net outflow per unit area</b>: positive at
+sources, negative at sinks, zero where whatever flows in also flows out.</p>
+
+<p>Adding up the outflow of many tiny squares, all interior faces cancel (what leaves one square enters its neighbour), and only
+the outer boundary survives. This is the <span class="term" data-g="divthm">divergence theorem</span> (Gauss' theorem),
+the single most important formula of this course:</p>
+<div class="box def">
+$$\int_\Omega \nabla\cdot\mathbf F \dd\mathbf x \;=\; \int_{\partial\Omega} \mathbf F\cdot\mathbf n \dd s .$$
+<p>Total source strength inside a region = total <span class="term" data-g="flux">flux</span> through its boundary.</p>
+</div>
+<p>The boundary integral $\int \mathbf F\cdot\mathbf n\,\mathrm ds$ is called the <b>flux of $\mathbf F$ through the curve</b>;
+only the normal component of $\mathbf F$ counts (a flow tangential to a wall does not cross it). In 1D the theorem is just the
+fundamental theorem of calculus, $\int_a^b f'(x)\,\mathrm dx = f(b)\cdot(+1) + f(a)\cdot(-1)$, where $\pm1$ are the "outward normals"
+of the interval's two end points.</p>
+
+<figure class="widget" id="w-divthm">
+<figcaption><b>Divergence theorem playground.</b> Drag the white vertices (or the inside of the polygon to move it).
+Arrows on the edges show the outward normals, scaled by the flux through that edge: <span style="color:var(--accent-2)">orange = outflow</span>,
+<span style="color:var(--accent)">blue = inflow</span>. The read-out compares the sum of edge fluxes (Gauss quadrature on each edge)
+with the area integral of the divergence (quadrature on a triangulation of the polygon) — two completely different computations
+that always agree.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li><b>Vortex:</b> the divergence is zero everywhere, so every polygon has zero net flux — even though individual edges have large fluxes.</li>
+<li><b>Source $\mathbf F = (x,y)/2$:</b> $\nabla\cdot\mathbf F = 1$, so the net flux equals the polygon's <em>area</em>. Drag a vertex and watch both numbers change together.</li>
+<li><b>Localised source:</b> move the polygon away from the origin: the flux drops; make it enclose the origin: positive. Outside the
+ring $r = \sqrt 2$ the divergence is negative — the field slows down, so flux is "absorbed" there.</li>
+<li>Make the polygon <b>non-convex</b>: the theorem still holds.</li>
+</ul>
+</div>
+
+<h3>Integration by parts in several dimensions</h3>
+<p>Combine the product rule $\nabla\cdot(v\mathbf F) = v\,\nabla\cdot\mathbf F + \nabla v\cdot\mathbf F$ with the divergence theorem
+applied to $v\mathbf F$ and you get the multi-dimensional version of integration by parts:</p>
+$$\int_\Omega v\,\nabla\cdot\mathbf F \dd\mathbf x = \int_{\partial\Omega} v\,\mathbf F\cdot\mathbf n \dd s - \int_\Omega \nabla v\cdot\mathbf F \dd\mathbf x .$$
+<p>With $\mathbf F = \nabla u$ this becomes <b>Green's first identity</b> (write $\partial_n u := \nabla u\cdot\mathbf n$ for the normal derivative):</p>
+$$\int_\Omega v\,\Delta u \dd\mathbf x = \int_{\partial\Omega} v\,\partial_n u \dd s - \int_\Omega \nabla v\cdot\nabla u \dd\mathbf x .$$
+<p>It moves one derivative from $u$ onto $v$ at the price of a boundary term. Every finite element, DG and FV method in this
+course starts with this one manoeuvre — keep an eye on the boundary term, it is where fluxes and boundary conditions enter.</p>
+
+<h2 id="errors">Measuring errors: norms</h2>
+<p>A numerical method produces an approximation $u_h$; its error $e = u - u_h$ is again a function. To compare methods we
+condense it into one number, a <b>norm</b>:</p>
+<ul>
+<li>max norm: $\|e\|_\infty = \max_{\mathbf x} |e(\mathbf x)|$ — the worst point;</li>
+<li><span class="term" data-g="l2">$L^2$ norm</span>: $\|e\|_{L^2(\Omega)} = \big(\int_\Omega e^2 \dd\mathbf x\big)^{1/2}$ — a root-mean-square error (the continuous cousin of the RMSE between two images);</li>
+<li><span class="term" data-g="h1">$H^1$ seminorm</span>: $|e|_{H^1} = \|\nabla e\|_{L^2}$ — the error in the gradient (for heat problems: in the heat flux).</li>
+</ul>
+<p>The integrals are computed with high-order quadrature rules, never by sampling only at the mesh nodes: many methods are
+extra accurate at special points (“superconvergence”), and nodal sampling would make them look better than they are.</p>
+
+<h2 id="convergence">Convergence and log–log plots</h2>
+<p>Discretisations depend on a <span class="term" data-g="mesh">mesh</span> of cells with size $h$. A method <em>converges</em> if the error goes to
+zero as $h\to0$; it has <span class="term" data-g="order">order</span> $r$ if</p>
+$$\|u - u_h\| \approx C\,h^{r}\qquad (h \to 0).$$
+<p>Taking logarithms, $\log\|e\| \approx \log C + r\log h$: on a plot with logarithmic axes the error curve is a
+<b>straight line of slope $r$</b>. Halving $h$ divides the error by $2^r$: by 2 for a first-order method, by 16 for a fourth-order
+one. With two measurements, $r \approx \log(e_1/e_2)/\log(h_1/h_2)$. This is how every solver on this site is verified.</p>
+
+<p>The simplest "discretisation" is <b>piecewise polynomial interpolation</b>: cut $[0,1]$ into $N$ cells of width $h = 1/N$
+and on each cell replace $f$ by the polynomial of degree $p$ that matches $f$ at $p+1$ nodes. Taylor's theorem shows the error
+on a cell is at most about $\frac{h^{p+1}}{(p+1)!}\max|f^{(p+1)}|$, so we expect order $r = p+1$ — <em>if $f$ is smooth</em>
+(i.e. if its $(p{+}1)$-st derivative exists and is bounded).</p>
+
+<figure class="widget" id="w-conv">
+<figcaption><b>Convergence explorer.</b> First plot: $f$ and its piecewise interpolant on the current mesh (dots = interpolation nodes).
+Second plot: the error for $N = 2,4,\dots,256$ on log–log axes; the hollow circle is the current mesh. The triangle shows the
+expected slope.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Smooth function: increase $p$ and watch the slope grow as $p+1$. For $p=4$ the curve hits a floor near $10^{-15}$: <b>round-off</b> of double precision.</li>
+<li>Steep but smooth function: for coarse meshes nothing seems to converge (“pre-asymptotic regime”), then the slope kicks in once $h$ resolves the feature.</li>
+<li><b>Kink</b> $|x-\tfrac13|$: no matter how large $p$ is, the $L^2$ slope stays at $1.5$ (max norm: $1$). Only the one cell containing the kink is badly
+approximated; its error is $O(h)$ on a set of width $h$. <b>Smoothness, not polynomial degree, limits the rate.</b></li>
+<li><b>Jump</b>: slope $0.5$ in $L^2$ and no convergence at all in the max norm. This is why shocks in fluid flow need special treatment (chapters 5–7).</li>
+</ul>
+</div>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<p>Reading off a rate from the coarsest meshes (pre-asymptotic) or from the finest ones (round-off floor) gives nonsense. Always look
+at the whole curve, and be suspicious of a rate that is "almost" the expected one: an error in a code often shows up as an order
+lost (slope $p$ instead of $p+1$) rather than as an obviously wrong picture.</p>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>The gradient $\nabla u$ points uphill, perpendicular to level sets; the Laplacian $\Delta u = \nabla\cdot\nabla u$ compares $u$ with its local average.</li>
+<li>Divergence = net outflow per unit area. Divergence theorem: $\int_\Omega\nabla\cdot\mathbf F = \int_{\partial\Omega}\mathbf F\cdot\mathbf n$.</li>
+<li>Integration by parts moves derivatives onto a test function and produces boundary (flux) terms.</li>
+<li>Errors are measured in norms ($L^2$, $H^1$, max); a method of order $r$ shows slope $r$ on a log–log plot — for smooth solutions.</li>
+</ul>
+<p>Next we give the abstract word “flux” a physical meaning and derive conservation laws.</p>
+
+</main>
+</body>
+</html>

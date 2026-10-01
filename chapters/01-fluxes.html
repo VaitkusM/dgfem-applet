@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1. Fluxes &amp; conservation laws — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch01.js"></script>
+</head>
+<body data-chapter="01">
+<main class="content">
+
+<h1><span class="chapnum">1</span>Fluxes &amp; conservation laws</h1>
+<p class="subtitle">What a flux is physically, how “conservation” becomes a PDE, and why nonlinear transport develops shocks.</p>
+
+<p class="lead">Most PDEs of physics are <em>balance laws</em>: the amount of something (mass, heat, momentum) inside a region changes
+only because it flows across the region's boundary or is produced inside. The quantity describing the flow is the
+<span class="term" data-g="flux">flux</span>. Getting fluxes right — physically and numerically — is the common thread of every
+method in this course.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$u(\mathbf x, t)$</td><td>a <em>conserved quantity</em> per unit area (density, concentration, energy density, …)</td></tr>
+<tr><td>$\mathbf F(u)$</td><td>its flux: amount crossing a unit length per unit time (a vector field)</td></tr>
+<tr><td>$V$, $\partial V$</td><td>a fixed <em>control volume</em> (any region) and its boundary, with outward normal $\mathbf n$</td></tr>
+<tr><td>$\mathbf a$, $k$</td><td>a velocity field; a diffusivity (heat conductivity) $k \ge 0$</td></tr>
+<tr><td>$\partial_t u$, $u_t$</td><td>partial derivative in time</td></tr>
+<tr><td>$f(u)$, $f'(u)$</td><td>in 1D: scalar flux function and its derivative, the <em>characteristic speed</em></td></tr>
+<tr><td>$u_L, u_R$; $[\,\cdot\,]$</td><td>states left/right of a discontinuity; jump $[q] = q_R - q_L$ (in this chapter)</td></tr>
+</table>
+</div>
+
+<h2 id="flux">What is a flux?</h2>
+<p>A flux is a vector field $\mathbf F$ whose normal component $\mathbf F\cdot\mathbf n$ tells how much of a quantity crosses a small piece
+of curve per unit length and per unit time. The total amount crossing a curve $\Gamma$ per unit time is $\int_\Gamma \mathbf F\cdot\mathbf n \dd s$.
+Flux vectors come from physics — they are the <em>constitutive</em> part of a model:</p>
+<ul>
+<li><b>Advective flux</b> $\mathbf F = \mathbf a\,u$: stuff of density $u$ carried by a velocity $\mathbf a$ (smoke in wind, dye in water). In gas dynamics the mass flux is $\rho\mathbf u$.</li>
+<li><b>Diffusive flux</b> $\mathbf F = -k\nabla u$ (Fourier's law for heat, Fick's law for concentrations): stuff flows <em>down</em> the gradient, from hot to cold, at a rate proportional to the steepness.</li>
+<li><b>Nonlinear fluxes</b> $\mathbf F(u)$: in traffic flow the car flux is density × speed, and the speed depends on the density; in gas dynamics the momentum flux is $\rho \mathbf u\otimes\mathbf u + p\mathbf I$.</li>
+</ul>
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>Radiometry! Irradiance is the radiant flux through a surface per unit area. Light arriving in direction $\boldsymbol\omega$ deposits
+energy proportional to $\boldsymbol\omega\cdot\mathbf n = \cos\theta$ — Lambert's cosine law is exactly the "only the normal component of
+the flux counts" rule.</p>
+</div>
+
+<h2 id="conservation">The conservation law</h2>
+<p>Pick any fixed region $V$. Let $M(t) = \int_V u \dd\mathbf x$ be the amount inside. Without sources, it can only change through the boundary:</p>
+<div class="box def">
+$$\frac{\mathrm d}{\mathrm dt}\int_V u \dd\mathbf x \;=\; -\int_{\partial V} \mathbf F\cdot\mathbf n \dd s \qquad\text{for every region } V.$$
+<p>(The minus sign: $\mathbf F\cdot\mathbf n > 0$ means outflow, which decreases $M$.) This <b>integral form</b> is the physical law.</p>
+</div>
+<p>Apply the divergence theorem to the right-hand side and move the time derivative inside the integral:
+$\int_V \big(\partial_t u + \nabla\cdot\mathbf F\big) \dd\mathbf x = 0$. Since this holds for <em>every</em> region $V$, the integrand itself must vanish
+(if it were positive somewhere, a tiny $V$ around that point would give a positive integral). We get the <b>differential form</b></p>
+$$\partial_t u + \nabla\cdot\mathbf F(u) = 0,$$
+<p>a <span class="term" data-g="conslaw">conservation law</span>. With a source term $s$ (heating, chemical reactions) the right-hand side becomes $s$.
+Keep in mind the logical order: the integral form is the fundamental one; the differential form needs $u$ to be differentiable,
+and we will soon meet solutions that are not.</p>
+
+<figure class="widget" id="w-control">
+<figcaption><b>Control-volume bookkeeping.</b> A blob of dye rotates rigidly with the velocity field $\mathbf a = \omega(-(y-\tfrac12),\, x-\tfrac12)$.
+The cyan box is a control volume $V$. The right plot compares the rate of change of the mass in the box, $\mathrm dM/\mathrm dt$ (computed by
+differentiating $M(t)$ in time), with the net inflow $-\oint_{\partial V} u\,\mathbf a\cdot\mathbf n\,\mathrm ds$ (computed by integrating over the four sides).
+They coincide at every instant. Drag or resize the box and press play.</figcaption>
+</figure>
+
+<h2 id="models">Model problems: transport, diffusion, Poisson</h2>
+<p>Inserting the two basic fluxes into the conservation law gives the <b>advection–diffusion equation</b></p>
+$$\partial_t u + \nabla\cdot(\mathbf a u) - \nabla\cdot(k\nabla u) = s,\qquad \mathbf F = \underbrace{\mathbf a u}_{\text{advective}} \underbrace{-\,k\nabla u}_{\text{diffusive}} .$$
+<p>Its two parts behave very differently:</p>
+<ul>
+<li><b>Advection</b> ($k=0$) is <em>hyperbolic</em>: information travels with finite speed along curves (characteristics, below); profiles are transported, sharp fronts stay sharp.</li>
+<li><b>Diffusion</b> is <em>parabolic</em>: it smooths everything instantly, with infinite propagation speed.</li>
+<li>When nothing changes in time ($\partial_t u = 0$), $\mathbf a = 0$ and $k = 1$, we get the <b>Poisson equation</b> $-\Delta u = s$, which is <em>elliptic</em>:
+an equilibrium in which every point influences every other point. It needs boundary data all around $\partial\Omega$.</li>
+</ul>
+
+<figure class="widget" id="w-advdiff">
+<figcaption><b>Advection–diffusion in 1D</b> with the exact solution
+$u = \frac{\sigma}{\sqrt{\sigma^2+4kt}}\exp\!\big(-\frac{(x - x_0 - at)^2}{\sigma^2 + 4kt}\big)$.
+The second plot splits the flux into its advective part $a u$ (proportional to $u$) and its diffusive part $-k u_x$
+(positive on the front flank, negative on the back flank: it pushes material outwards). The integral $\int u\,\mathrm dx$ stays
+constant: the PDE conserves mass for any $a$ and $k$.</figcaption>
+</figure>
+
+<h2 id="characteristics">Characteristics: how transport carries information</h2>
+<p>Take linear advection in 1D, $u_t + a u_x = 0$ with constant $a$, and follow an observer moving with speed $a$: $x(t) = x_0 + a t$.
+By the chain rule, the value they see changes at the rate</p>
+$$\frac{\mathrm d}{\mathrm dt} u(x(t), t) = u_t + \frac{\mathrm dx}{\mathrm dt} u_x = u_t + a u_x = 0 .$$
+<p>So $u$ is constant along the straight lines $x - at = x_0$, the <span class="term" data-g="characteristic">characteristics</span>, and the solution is
+$u(x,t) = u_0(x - at)$: the initial profile slides to the right without changing shape. A boundary condition is needed only where
+characteristics <em>enter</em> the domain (the <em>inflow</em> boundary) — a fact we will use for boundary conditions and upwinding.</p>
+
+<figure class="widget" id="w-charlin">
+<figcaption><b>Space–time diagram of linear advection.</b> Horizontal axis $x$, vertical axis $t$. The colour is constant along the
+white characteristic lines. The square pulse shows that discontinuities are transported too — the formula $u_0(x-at)$ makes sense for
+any $u_0$, even though $u$ is not differentiable at the jumps (it satisfies the integral form).</figcaption>
+</figure>
+
+<h2 id="burgers">Nonlinear transport: Burgers' equation and shocks</h2>
+<p>The simplest nonlinear conservation law is the (inviscid) <b>Burgers equation</b></p>
+$$u_t + \Big(\frac{u^2}{2}\Big)_x = 0 \qquad\Longleftrightarrow\qquad u_t + u\,u_x = 0 \quad\text{(for smooth } u\text{)}.$$
+<p>It is advection with a speed equal to the solution itself: large values move faster. The same argument as above shows that $u$ is constant
+along characteristics $x = x_0 + u_0(x_0)\,t$ — straight lines, but now with different slopes. Where $u_0$ decreases, fast fluid behind catches up
+with slow fluid ahead, and the characteristics eventually <b>cross</b>. The first crossing happens at the <em>breaking time</em></p>
+$$t^* = -\frac{1}{\min_x u_0'(x)} .$$
+<p>After $t^*$ the method of characteristics would give several values at the same point (the dashed "overturning wave" below), which is
+physically meaningless. What really happens: a discontinuity, a <span class="term" data-g="shock">shock</span>, forms and moves on.</p>
+
+<figure class="widget" id="w-burgers">
+<figcaption><b>Shock formation</b> for $u_0(x) = \tfrac14 + \tfrac12\sin(2\pi x)$ on a periodic domain, so $t^* = 1/\pi$.
+Left: characteristics coloured by the value they carry. Right: the multi-valued characteristic "solution" (dashed) versus the physically
+correct <em>entropy solution</em>, computed with a high-resolution finite volume method (chapter 5) on 800 cells. The shock sits exactly where it
+cuts off equal areas of the overturned wave, and the total mass $\int u\,\mathrm dx$ never changes.</figcaption>
+</figure>
+
+<h3>The Rankine–Hugoniot condition</h3>
+<p>How fast does a shock move? Use the integral form on an interval $[x_a, x_b]$ containing a discontinuity at position $x_s(t)$, with state $u_L$
+to its left and $u_R$ to its right:</p>
+$$\frac{\mathrm d}{\mathrm dt}\Big[u_L\,(x_s - x_a) + u_R\,(x_b - x_s)\Big] = f(u_L) - f(u_R)
+\quad\Longrightarrow\quad s\,(u_L - u_R) = f(u_L) - f(u_R),$$
+<p>where $s = \mathrm dx_s/\mathrm dt$. This is the <span class="term" data-g="rh">Rankine–Hugoniot condition</span> $s = [f]/[u]$: the shock speed is the
+ratio of the flux jump to the state jump. For Burgers, $s = \frac{u_L^2/2 - u_R^2/2}{u_L - u_R} = \frac{u_L + u_R}{2}$.
+Not every discontinuity satisfying it is physical: characteristics must run <em>into</em> the shock from both sides ($f'(u_L) > s > f'(u_R)$, the
+<em>Lax entropy condition</em>). If instead $u_L &lt; u_R$, the jump immediately opens into a continuous <b>rarefaction fan</b>.</p>
+
+<h3>The Riemann problem</h3>
+<p>The initial-value problem with a single jump, $u_0(x) = u_L$ for $x &lt; 0$ and $u_R$ for $x &gt; 0$, is called a
+<span class="term" data-g="riemann">Riemann problem</span>. Its solution depends only on $x/t$ (it is self-similar), and for Burgers it is either a
+shock with speed $(u_L+u_R)/2$ or a fan $u = x/t$. Riemann problems are the building blocks of finite volume and DG methods:
+every cell face where two different values meet <em>is</em> a little Riemann problem.</p>
+
+<figure class="widget" id="w-riemann">
+<figcaption><b>Burgers Riemann problem.</b> Choose $u_L$ and $u_R$. With $u_L &gt; u_R$, characteristics collide and end in a shock (thick line) moving with the
+Rankine–Hugoniot speed. With $u_L &lt; u_R$ they spread out and the gap is filled by a rarefaction fan (green). Try $u_L = -0.5$, $u_R = 1$: the fan
+contains the <em>sonic point</em> $u = 0$ where the characteristic speed changes sign — a notorious trouble spot for numerical fluxes.</figcaption>
+</figure>
+
+<h2 id="euler">Systems: the Euler equations of gas dynamics</h2>
+<p>Fluid flow conserves several quantities at once: mass, momentum and energy. In 1D, with density $\rho$, velocity $u$, pressure $p$ and total
+energy density $E$, the <b>Euler equations</b> read</p>
+$$\partial_t \begin{pmatrix}\rho\\ \rho u\\ E\end{pmatrix} + \partial_x \begin{pmatrix}\rho u\\ \rho u^2 + p\\ u\,(E+p)\end{pmatrix} = 0,
+\qquad p = (\gamma - 1)\Big(E - \tfrac12\rho u^2\Big),$$
+<p>with $\gamma = 1.4$ for air. It is still $\partial_t \mathbf U + \partial_x \mathbf F(\mathbf U) = 0$, just with vectors. Information now travels
+along three families of characteristics with speeds $u - c$, $u$ and $u + c$, where $c = \sqrt{\gamma p/\rho}$ is the speed of sound;
+their Riemann problems contain shocks, rarefactions and <em>contact discontinuities</em>. Chapter 5 solves the famous Sod shock tube.</p>
+
+<h2 id="numflux">Preview: numerical fluxes</h2>
+<p>A computer stores $u$ by finitely many numbers per cell. On a cell face the two neighbouring cells generally disagree: the left cell says
+$u^-$, the right cell says $u^+$. Which flux crosses the face? We need a rule, a <span class="term" data-g="numflux">numerical flux</span>
+$\hat F(u^-, u^+)$, with three properties:</p>
+<ol>
+<li><b>Consistency:</b> $\hat F(u, u) = f(u)$ — if both sides agree, use the physical flux.</li>
+<li><b>Conservation:</b> what leaves one cell through the face enters the other one, exactly. Then the discrete total mass is conserved, just like the integral law.</li>
+<li><b>Stability / upwinding:</b> information must be taken from where it comes from (the direction of the characteristics).</li>
+</ol>
+<p>The "exact" choice is to solve the little Riemann problem at the face and take the flux of its solution at $x/t = 0$ — Godunov's idea. Chapter 5
+develops this into the finite volume method; chapter 6 into discontinuous Galerkin.</p>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<p>Writing Burgers in the non-conservative form $u_t + u u_x = 0$ and discretising <em>that</em> gives shocks moving at the wrong speed —
+the two forms are only equivalent for smooth solutions. Numerical methods for conservation laws must be built on the
+<em>conservative</em> (flux) form, so that they converge to the solution of the integral law, including the correct Rankine–Hugoniot speed.</p>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>A flux $\mathbf F$ measures transport across curves; only $\mathbf F\cdot\mathbf n$ counts.</li>
+<li>Integral conservation law $\frac{\mathrm d}{\mathrm dt}\int_V u = -\oint_{\partial V}\mathbf F\cdot\mathbf n$ $\Rightarrow$ differential form $u_t + \nabla\cdot\mathbf F = 0$ for smooth $u$.</li>
+<li>Advective fluxes transport along characteristics (hyperbolic); diffusive fluxes $-k\nabla u$ smooth (parabolic); the steady diffusion problem is the Poisson equation (elliptic).</li>
+<li>Nonlinear fluxes make characteristics cross: shocks form, moving with the Rankine–Hugoniot speed $s = [f]/[u]$.</li>
+<li>Numerical methods need numerical fluxes $\hat F(u^-,u^+)$: consistent, conservative, upwind.</li>
+</ul>
+
+</main>
+</body>
+</html>

@@ -3,7 +3,9 @@
  * Keep sorted; tests/unit/manifest.test.js checks it against the file system.
  */
 export const TEST_FILES = [
+  'conv/fv1d.test.js',
   'unit/basis.test.js',
+  'unit/interp.test.js',
   'unit/la.test.js',
   'unit/manifest.test.js',
   'unit/mesh.test.js',
