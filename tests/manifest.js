@@ -5,7 +5,10 @@
 export const TEST_FILES = [
   'conv/advbc1d.test.js',
   'conv/cg.test.js',
+  'conv/euler.test.js',
+  'conv/fv1d-hires.test.js',
   'conv/fv1d.test.js',
+  'conv/fv2d.test.js',
   'conv/poisson1d.test.js',
   'unit/basis.test.js',
   'unit/interp.test.js',

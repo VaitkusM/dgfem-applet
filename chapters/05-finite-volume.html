@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>5. Finite volume methods — Fluxes, DG &amp; friends</title>
+<link rel="stylesheet" href="../css/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
+<script type="module" src="js/ch05.js"></script>
+<style>
+  /* chapter 5: two side-by-side panels of the 2D widget keep a square aspect */
+  #w-zalesak .widget-body > .panel { flex: 1 1 260px; }
+  #w-sod .widget-body > .panel { flex: 1 1 calc(50% - 1rem); min-width: 240px; }
+</style>
+</head>
+<body data-chapter="05">
+<main class="content">
+
+<h1><span class="chapnum">5</span>Finite volume methods</h1>
+<p class="subtitle">Store cell averages, let neighbouring cells exchange fluxes, solve little Riemann problems at the faces —
+and learn why the result must be nonlinear to be both sharp and wiggle-free.</p>
+
+<p class="lead">Chapter 1 showed that the <em>integral</em> form of a conservation law is the physical one, and that its solutions can
+develop shocks. A <b>finite volume (FV) method</b> discretises exactly that integral form: the domain is cut into cells, and the
+unknowns are the amounts of the conserved quantity in each cell. Whatever leaves a cell through a face enters its neighbour, so the
+scheme conserves mass <em>by construction</em> — even across shocks. Everything then hinges on one question: what is the flux through a
+face, given only the cell averages? Answering it well is the art of <span class="term" data-g="numflux">numerical fluxes</span>,
+and it carries over verbatim to discontinuous Galerkin methods in chapter 6.</p>
+
+<div class="box notation">
+<span class="box-title">Notation for this chapter</span>
+<table class="notation-table">
+<tr><td>$u_t + f(u)_x = 0$</td><td>scalar conservation law in 1D; $f$ is the flux function, $f'(u)$ the characteristic speed</td></tr>
+<tr><td>$C_i = [x_{i-\frac12}, x_{i+\frac12}]$, $h$</td><td>cell $i$ with faces $x_{i\pm\frac12}$, uniform width $h$; cell centre $x_i$</td></tr>
+<tr><td>$\bar u_i(t)$, $\bar u_i^n$</td><td><span class="term" data-g="cellavg">cell average</span> $\frac1h\int_{C_i} u\,\mathrm dx$; the superscript $n$ means time level $t^n = n\,\Delta t$</td></tr>
+<tr><td>$\hat F_{i+\frac12} = \hat F(u^-, u^+)$</td><td>numerical flux through face $x_{i+\frac12}$ from the states just left ($u^-$) and right ($u^+$) of it; positive = flow to the right</td></tr>
+<tr><td>$\nu = a\,\Delta t/h$</td><td>Courant (CFL) number: how many cells the fastest wave travels in one time step</td></tr>
+<tr><td>$\sigma_i$</td><td>limited slope of cell $i$, measured as a <em>difference per cell</em> (the reconstruction is $\bar u_i + \sigma_i\,(x - x_i)/h$)</td></tr>
+<tr><td>$r_i$, $\varphi(r)$</td><td>smoothness ratio $r_i = (\bar u_i - \bar u_{i-1})/(\bar u_{i+1} - \bar u_i)$ and limiter function</td></tr>
+<tr><td>$\mathrm{TV}(u) = \sum_i |\bar u_{i+1} - \bar u_i|$</td><td><span class="term" data-g="tvd">total variation</span>: the total "up and down" of the discrete solution</td></tr>
+<tr><td>$\mathbf U = (\rho, \rho u, E)$</td><td>Euler equations: density, momentum, total energy; pressure $p$, sound speed $c$ (section <a href="#systems">Systems</a>)</td></tr>
+</table>
+</div>
+
+<h2 id="averages">Cell averages and the exact finite volume update</h2>
+<p>Cut the interval into cells $C_i = [x_{i-\frac12}, x_{i+\frac12}]$ of width $h$. Instead of point values, an FV method stores one number per cell,
+the <b>cell average</b></p>
+$$\bar u_i(t) = \frac1h\int_{x_{i-\frac12}}^{x_{i+\frac12}} u(x,t)\,\mathrm dx .$$
+<p>Now apply the integral conservation law of chapter 1 to the control volume $V = C_i$. In 1D the "boundary" of $C_i$ consists of its two
+end points; the outward normal is $-1$ at the left face and $+1$ at the right face, so the boundary integral is just a difference:</p>
+$$\frac{\mathrm d}{\mathrm dt}\int_{C_i} u\,\mathrm dx = -\Big[f\big(u(x_{i+\frac12},t)\big)\cdot(+1) + f\big(u(x_{i-\frac12},t)\big)\cdot(-1)\Big].$$
+<p>Divide by $h$:</p>
+<div class="box def">
+$$\frac{\mathrm d\bar u_i}{\mathrm dt} = -\frac{F_{i+\frac12}(t) - F_{i-\frac12}(t)}{h},\qquad F_{i+\frac12}(t) = f\big(u(x_{i+\frac12}, t)\big).$$
+<p>This is <b>exact</b> — no approximation has been made yet. Integrating also over one time step $[t^n, t^{n+1}]$ gives the fully discrete, still exact,
+version $\bar u_i^{n+1} = \bar u_i^n - \frac{\Delta t}{h}\big(\bar F_{i+\frac12} - \bar F_{i-\frac12}\big)$ with time-averaged face fluxes
+$\bar F_{i+\frac12} = \frac1{\Delta t}\int_{t^n}^{t^{n+1}} f(u(x_{i+\frac12},t))\,\mathrm dt$.</p>
+</div>
+<p>The only thing we do not know is the face flux: it needs the solution <em>at</em> the face, while we only store averages. An FV method replaces
+$F_{i+\frac12}$ by a <b>numerical flux</b> $\hat F_{i+\frac12} = \hat F(u^-_{i+\frac12}, u^+_{i+\frac12})$ computed from the states on the two sides of the face.
+Whatever that choice is, the scheme is <b>conservative</b>: the flux $\hat F_{i+\frac12}$ is subtracted from cell $i$ and added to cell $i+1$, so summing the update over
+all cells the interior fluxes cancel in pairs (the sum <em>telescopes</em>) and</p>
+$$\frac{\mathrm d}{\mathrm dt}\sum_i h\,\bar u_i = \hat F_{\text{left boundary}} - \hat F_{\text{right boundary}} \qquad (= 0 \text{ for periodic boundaries}).$$
+<p>This discrete conservation is what makes FV methods compute shocks at the right speed: by the Lax–Wendroff theorem, if a conservative,
+consistent scheme converges, it converges to a weak solution, so shocks automatically satisfy the Rankine–Hugoniot condition of chapter 1.</p>
+
+<div class="box analogy">
+<span class="box-title">Graphics analogy</span>
+<p>A cell average is a <b>box-filtered pixel</b>: the value of a pixel in a properly anti-aliased image is the average of the scene over the pixel's
+footprint, not a point sample. "Reconstruction" below is exactly texture magnification: nearest-neighbour (piecewise constant) or linear
+interpolation. And the limiters we will meet play the role of the clamping used to avoid the ringing/halo artefacts of sharp reconstruction filters (Lanczos, bicubic) near edges.</p>
+</div>
+
+<h2 id="godunov">Godunov's idea: reconstruct, evolve, average</h2>
+<p>Godunov (1959) turned the exact update into a method with a three-step recipe, called <b>REA</b>:</p>
+<ol>
+<li><b>Reconstruct</b> a function $\tilde u(x, t^n)$ from the averages; Godunov used the piecewise constant function $\tilde u = \bar u_i^n$ on $C_i$.</li>
+<li><b>Evolve</b> $\tilde u$ <em>exactly</em> by the PDE for one time step. Because $\tilde u$ is piecewise constant, this is a collection of
+<span class="term" data-g="riemann">Riemann problems</span>, one at each face — as long as the waves of neighbouring faces do not interact during the step.</li>
+<li><b>Average</b> the evolved function over each cell to get $\bar u_i^{n+1}$.</li>
+</ol>
+<p>Since the evolution is exact, step 3 is the exact update above with $\bar F_{i+\frac12}$ computed from the Riemann solution at the face. A Riemann solution is
+self-similar (constant along rays $x/t = \text{const}$), so the state on the face itself, the ray $x/t = 0$, does not change during the step, and</p>
+$$\hat F^{\text{God}}(u^-, u^+) = f\big(u^*(0;\,u^-, u^+)\big),$$
+<p>where $u^*(\xi; u^-, u^+)$ is the Riemann solution at $\xi = (x - x_{i+\frac12})/(t - t^n)$. That is the <b>Godunov flux</b>.
+For linear advection $u_t + a u_x = 0$ with $a > 0$ the Riemann solution simply moves the jump to the right, so the face sees the left state:
+$\hat F = a\,\bar u_{i}$ at face $x_{i+\frac12}$ — this is the <span class="term" data-g="upwind">upwind</span> flux, and the update becomes</p>
+$$\bar u_i^{n+1} = \bar u_i^n - \nu\,\big(\bar u_i^n - \bar u_{i-1}^n\big) = (1-\nu)\,\bar u_i^n + \nu\,\bar u_{i-1}^n,\qquad \nu = \frac{a\Delta t}{h}.$$
+<p>Geometrically: during one step a slab of width $a\Delta t$ (a fraction $\nu$ of each cell) slides into the next cell, and the new average mixes
+the two values with weights $1-\nu$ and $\nu$. Step through it below.</p>
+
+<figure class="widget" id="w-rea">
+<figcaption><b>Godunov's reconstruct–evolve–average step</b> for linear advection with speed $a > 0$ on a periodic row of cells.
+<b>Reconstruct:</b> a function is built from the cell averages (bars). <b>Evolve:</b> it is shifted exactly by $a\tau$; the hatched slabs are what crosses each face —
+their areas are the face fluxes $\Delta t\,\bar F_{i+\frac12}$. <b>Average:</b> the shifted function is averaged over each cell. With piecewise
+constants the result is the upwind scheme; with a linear reconstruction the same recipe yields second-order schemes ($\sigma_i$ = central difference gives Fromm's scheme, a limited $\sigma_i$ a MUSCL scheme).
+The readout compares the new average obtained by integrating the shifted function numerically with the closed-form update.</figcaption>
+</figure>
+
+<p>With a linear reconstruction $\tilde u = \bar u_i + \sigma_i (x - x_i)/h$ the slab crossing face $x_{i+\frac12}$ is a trapezoid of width $a\Delta t$, centred at
+$x_{i+\frac12} - a\Delta t/2$; its area is $a\Delta t\,\big(\bar u_i + \tfrac12(1-\nu)\sigma_i\big)$. Hence</p>
+$$\bar u_i^{n+1} = \bar u_i^n - \nu\big(\bar u_i^n - \bar u_{i-1}^n\big) - \frac{\nu(1-\nu)}{2}\big(\sigma_i - \sigma_{i-1}\big).$$
+<p>Choosing $\sigma_i = \bar u_{i+1} - \bar u_i$ gives the Lax–Wendroff scheme, $\sigma_i = \bar u_i - \bar u_{i-1}$ the Beam–Warming scheme,
+and the central slope $\sigma_i = \tfrac12(\bar u_{i+1} - \bar u_{i-1})$ Fromm's scheme — all second order, and all oscillating at jumps (try the unlimited slope in the widget
+with a large $\nu$). Remember this: we will come back to it with Godunov's theorem.</p>
+
+<h2 id="fluxes">Numerical fluxes for scalar conservation laws</h2>
+<p>For nonlinear $f$, solving the Riemann problem at every face can be expensive (for systems it requires an iterative solver), so many cheaper
+<em>approximate</em> fluxes exist. Any numerical flux must be</p>
+<ul>
+<li><b>consistent</b>: $\hat F(u, u) = f(u)$ — two equal states give the physical flux;</li>
+<li><b>Lipschitz continuous</b> in both arguments (needed for convergence proofs);</li>
+<li>and, for stability, preferably <b>monotone</b>: non-decreasing in $u^-$ and non-increasing in $u^+$. Writing the explicit Euler update as
+$\bar u_i^{n+1} = H(\bar u_{i-1}^n, \bar u_i^n, \bar u_{i+1}^n)$, a monotone flux makes $H$ non-decreasing in each argument under a CFL condition: the scheme is
+<b>monotone</b> — it cannot create new maxima or minima.</li>
+</ul>
+<p>The classic choices, with $u^- = u_L$, $u^+ = u_R$:</p>
+<table class="data text">
+<tr><th>flux</th><th>formula $\hat F(u_L, u_R)$</th><th>comment</th></tr>
+<tr><td>central</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big)$</td><td>consistent but <em>unconditionally unstable</em> with forward Euler: no upwinding at all</td></tr>
+<tr><td>upwind</td><td>$f(u_L)$ if $a \ge 0$, $f(u_R)$ if $a &lt; 0$</td><td>linear advection: take the state the wind comes from</td></tr>
+<tr><td>Lax–Friedrichs / Rusanov</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big) - \tfrac12\,\alpha\,(u_R - u_L)$, $\ \alpha = \max|f'(u)|$</td><td>central flux + numerical viscosity proportional to the fastest local speed (Rusanov / <em>local</em> LF: max over the two states; global LF: over the whole domain)</td></tr>
+<tr><td>Godunov</td><td>$\min_{u_L \le u \le u_R} f(u)$ if $u_L \le u_R$; $\ \max_{u_R \le u \le u_L} f(u)$ if $u_L > u_R$</td><td>exact Riemann solution at the face; this closed form (Osher's formula) holds for any continuous $f$</td></tr>
+<tr><td>Roe</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big) - \tfrac12\,|\hat a|\,(u_R - u_L)$, $\ \hat a = \dfrac{f(u_R) - f(u_L)}{u_R - u_L}$</td><td>upwind with the Rankine–Hugoniot speed of the jump: solves a <em>linearised</em> Riemann problem exactly</td></tr>
+</table>
+<p>All of them except "central" have the form <em>central flux minus a dissipation term</em> $\tfrac12 Q\,(u_R - u_L)$ with a coefficient $Q\ge 0$: upwind/Roe use
+$Q = |\hat a|$, Rusanov uses $Q = \alpha \ge |\hat a|$ (more dissipative). The dissipation term is what damps the instability of the central flux.</p>
+<p><b>Roe and expansion shocks.</b> Roe's flux treats every jump as a single wave of speed $\hat a$. For Burgers' equation with $u_L = -1 &lt; 0 &lt; u_R = 1$ the
+true solution is a rarefaction fan spreading in both directions, but $\hat a = (u_L + u_R)/2 = 0$, so Roe's flux is $\tfrac12 f(u_L) + \tfrac12 f(u_R) = \tfrac12$,
+which is exactly $f(u_L) = f(u_R)$: the jump produces no change at all and stays as a stationary, entropy-violating <b>expansion shock</b> forever.
+<b>Harten's entropy fix</b> replaces $|\hat a|$ by $(\hat a^2 + \delta^2)/(2\delta)$ whenever $|\hat a| &lt; \delta$: near sonic points (where $f'$ changes sign)
+a little dissipation is always added, and the fan opens. You can watch both in the playground below (Burgers, "Riemann B", Roe with and without fix).</p>
+
+<h2 id="cfl">The CFL condition</h2>
+<p>For the explicit upwind scheme, $\bar u_i^{n+1}$ depends on $\bar u_i^n$ and $\bar u_{i-1}^n$; after $n$ steps it depends on cells $i-n,\dots,i$ — the
+<b>numerical domain of dependence</b> is the interval $[x_i - n h, x_i]$. The exact solution at $(x_i, t^n)$ is $u_0(x_i - a\,n\Delta t)$: its
+<b>physical domain of dependence</b> is the single point where the characteristic through $(x_i, t^n)$ started. Courant, Friedrichs and Lewy (1928) observed that a
+convergent scheme must "see" that point: if $a\,n\Delta t > n h$, the information that determines the solution never reaches the scheme, and
+changing $u_0$ there would change the exact solution but not the numerical one. Hence the <span class="term" data-g="cfl">CFL condition</span></p>
+$$\nu = \frac{|a|\,\Delta t}{h} \le 1 \qquad\Longleftrightarrow\qquad \Delta t \le \frac{h}{|a|}\qquad\text{(nonlinear: } |a| \to \max_i |f'(\bar u_i)|).$$
+<p>The CFL condition is <em>necessary</em>; for upwind it is also sufficient. Look at the update $\bar u_i^{n+1} = (1-\nu)\bar u_i^n + \nu\,\bar u_{i-1}^n$: for $0\le\nu\le1$ it is a
+<b>convex combination</b>, so $\min \bar u^n \le \bar u^{n+1}_i \le \max \bar u^n$ (a discrete maximum principle — nothing can grow). For $\nu > 1$ the weight $1-\nu$
+is negative. A Fourier mode $\bar u_j^n = g^n e^{\mathrm i j\theta}$ is multiplied per step by
+$g(\theta) = 1 - \nu + \nu e^{-\mathrm i\theta}$, with</p>
+$$|g(\theta)|^2 = 1 - 2\nu(1-\nu)(1 - \cos\theta).$$
+<p>For $0 \le \nu \le 1$ we get $|g| \le 1$ for all $\theta$; for $\nu > 1$ the product $\nu(1-\nu)$ is negative and the sawtooth mode $\theta = \pi$ grows like
+$|1 - 2\nu|^n$: at $\nu = 1.2$ by a factor $1.4$ per step. At exactly $\nu = 1$ the update is $\bar u_i^{n+1} = \bar u_{i-1}^n$: the exact solution, shifted by one cell.</p>
+
+<figure class="widget" id="w-playground">
+<figcaption><b>1D finite volume playground.</b> Bars: cell averages $\bar u_i$; line: exact solution (advection, Riemann problems) or a fine-grid reference (2000 cells, MUSCL–MC).
+Choose the PDE, the initial data, the numerical flux, first order (piecewise constant) or MUSCL with a limiter, the time integrator and the CFL number $\nu$
+(the time step is $\Delta t = \nu h/\max_i|f'(\bar u_i)|$). Push $\nu$ above 1 with forward Euler and watch the sawtooth mode explode; choose the central flux
+to see that consistency alone is not enough. The readout tracks the total mass $\sum_i h\bar u_i$: it is conserved to round-off with periodic
+boundaries and changes exactly by $(f(u_L) - f(u_R))\,t$ for the Riemann problems (as long as the waves have not reached the boundary).</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Advection, square pulse, first order, $\nu = 1$: the pulse moves without any change. Now $\nu = 0.5$: it smears. $\nu = 1.05$: it blows up after a while.</li>
+<li>Burgers, Riemann B (a transonic fan $-1 \to 1$), first order, Roe flux: a frozen expansion shock. Switch to "Roe + Harten entropy fix", Godunov or Rusanov.</li>
+<li>Buckley–Leverett, Riemann A: the solution is a <em>compound wave</em> — a rarefaction immediately followed by a shock — because the flux is not convex.</li>
+<li>MUSCL with limiter "none" on the square pulse: second order, but over- and undershoots appear. Now try minmod and superbee.</li>
+</ul>
+</div>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<p>The CFL number is computed from the <em>current</em> maximal wave speed. For nonlinear problems that speed can grow during a step (or between
+the stages of a Runge–Kutta method), and for systems you must use the fastest <em>wave</em> speed $|u| + c$, not the flow speed $|u|$. Using a fixed
+$\Delta t$ chosen from the initial data is a classic source of mysterious blow-ups.</p>
+</div>
+
+<h2 id="diffusion">Numerical diffusion: the modified equation</h2>
+<p>Why does the first-order upwind scheme smear the square pulse? Ask which PDE the scheme solves <em>more accurately</em> than the one it was designed for.
+Insert a smooth function $u(x,t)$ into the scheme $\frac{u(x,t+\Delta t) - u(x,t)}{\Delta t} + a\,\frac{u(x,t) - u(x-h,t)}{h} = 0$ and Taylor-expand:</p>
+$$u_t + \tfrac12\Delta t\,u_{tt} + \mathcal O(\Delta t^2) + a\big(u_x - \tfrac12 h\,u_{xx} + \mathcal O(h^2)\big) = 0 .$$
+<p>To leading order $u_t = -a u_x$, so $u_{tt} = -a u_{xt} = a^2 u_{xx}$. Substituting,</p>
+<div class="box def">
+$$u_t + a\,u_x = \frac{a h}{2}\big(1 - \nu\big)\,u_{xx} + \mathcal O(h^2),\qquad \nu = \frac{a\Delta t}{h}.$$
+<p>The upwind scheme is a second-order accurate discretisation of an <b>advection–diffusion equation</b> with numerical diffusivity
+$D = \frac{a h}{2}(1-\nu)$ (Warming &amp; Hyett 1974). The diffusion vanishes for $\nu = 1$ (exact shift) and becomes <em>negative</em> — anti-diffusion,
+unstable — for $\nu > 1$: the CFL condition again.</p>
+</div>
+<p>This is the precise sense in which "upwinding adds artificial viscosity". Since $D \propto h$, a jump is smeared over a width $\sim\sqrt{D t}\sim\sqrt{h}$,
+which is why the $L^1$ error of upwind for a discontinuity decreases only like $h^{1/2}$, not $h$.</p>
+
+<figure class="widget" id="w-modeq">
+<figcaption><b>The modified equation in action.</b> The square pulse after one period ($t = 1$, $a = 1$) computed by upwind + forward Euler (bars), the exact
+solution (grey), and the exact solution of the <em>modified</em> advection–diffusion equation $u_t + u_x = D u_{xx}$ with $D = \frac h2(1-\nu)$, a sum of error functions (orange).
+The scheme follows the advection–diffusion curve almost perfectly: the readout compares the $L^1$ distances.</figcaption>
+</figure>
+
+<h2 id="barrier">Godunov's order barrier</h2>
+<p>First order is too diffusive; Lax–Wendroff and friends are second order but oscillate. Is there a <em>linear</em> scheme that is both
+second order and free of oscillations? Godunov proved in 1959 that there is not.</p>
+<div class="box def">
+<p><b>Theorem (Godunov).</b> A linear scheme $\bar u_i^{n+1} = \sum_k c_k\,\bar u^n_{i+k}$ for $u_t + a u_x = 0$ that is monotone (all $c_k \ge 0$, so it never creates new extrema)
+is at most first-order accurate.</p>
+</div>
+<p><b>Proof</b> (it is short and pretty). Second-order accuracy means the scheme is exact for quadratic polynomials: inserting $u = 1$, $u = x$ and $u = x^2$ and comparing with the
+exact shift $u(x - a\Delta t)$ gives (with $\nu = a\Delta t/h$)</p>
+$$\sum_k c_k = 1,\qquad \sum_k k\,c_k = -\nu,\qquad \sum_k k^2 c_k = \nu^2 .$$
+<p>If all $c_k \ge 0$, these are the moments of a probability distribution on the integers $k$ with mean $-\nu$ and second moment $\nu^2$. Its variance is
+$\sum_k k^2 c_k - (\sum_k k c_k)^2 = \nu^2 - \nu^2 = 0$, so all weight sits at a single integer $k = -\nu$: the scheme is the trivial exact shift for integer
+$\nu$. For any other $\nu$, no such scheme exists. $\square$</p>
+<p>The way out is to give up <em>linearity</em>: let the scheme look at the data and decide locally — high order where the solution is smooth,
+first order near jumps. Such schemes are called <b>high-resolution</b> schemes, and the device that decides is a <span class="term" data-g="limiter">limiter</span>.</p>
+
+<h2 id="muscl">High resolution: MUSCL reconstruction and slope limiters</h2>
+<p>Van Leer's MUSCL approach ("Monotone Upstream-centred Scheme for Conservation Laws", 1979) keeps Godunov's framework but reconstructs a
+<b>piecewise linear</b> function in each cell, with a slope chosen <em>nonlinearly</em> from the neighbouring averages:</p>
+$$\tilde u(x) = \bar u_i + \sigma_i\,\frac{x - x_i}{h}\ \ \text{on } C_i,\qquad u^-_{i+\frac12} = \bar u_i + \tfrac12\sigma_i,\qquad u^+_{i-\frac12} = \bar u_i - \tfrac12\sigma_i .$$
+<p>The face values are then fed into any numerical flux. With the two one-sided differences $\Delta_- = \bar u_i - \bar u_{i-1}$ and $\Delta_+ = \bar u_{i+1} - \bar u_i$
+the classic limiters are</p>
+<table class="data text">
+<tr><th>limiter</th><th>slope $\sigma_i$ (zero if $\Delta_-\Delta_+ \le 0$)</th><th>$\varphi(r)$, $\ r = \Delta_-/\Delta_+$</th></tr>
+<tr><td>minmod</td><td>the one of $\Delta_-, \Delta_+$ with smaller modulus</td><td>$\max(0, \min(1, r))$</td></tr>
+<tr><td>monotonised central (MC)</td><td>$\operatorname{sign}(\Delta_+)\min\big(2|\Delta_-|,\ 2|\Delta_+|,\ \tfrac12|\Delta_- + \Delta_+|\big)$</td><td>$\max\big(0,\min(2r, \tfrac{1+r}2, 2)\big)$</td></tr>
+<tr><td>van Leer</td><td>$\dfrac{2\Delta_-\Delta_+}{\Delta_- + \Delta_+}$ (harmonic mean)</td><td>$\dfrac{r + |r|}{1 + |r|}$</td></tr>
+<tr><td>superbee</td><td>$\operatorname{sign}(\Delta_+)\max\big(\min(2|\Delta_-|, |\Delta_+|),\ \min(|\Delta_-|, 2|\Delta_+|)\big)$</td><td>$\max\big(0, \min(2r, 1), \min(r, 2)\big)$</td></tr>
+</table>
+<p>In all cases $\sigma_i = \varphi(r_i)\,\Delta_+$. At a local extremum ($\Delta_-\Delta_+ \le 0$, i.e. $r \le 0$) the slope is set to zero: the scheme drops to first order there, so it
+cannot overshoot. In smooth monotone regions $r \approx 1$ and $\varphi(1) = 1$: the slope is the correct second-order one.</p>
+
+<h3>Total variation diminishing (TVD) schemes and Sweby's diagram</h3>
+<p>What does "no oscillations" mean mathematically? Harten (1983) proposed: the total variation $\mathrm{TV}(\bar u) = \sum_i |\bar u_{i+1} - \bar u_i|$ must not increase,
+$\mathrm{TV}(\bar u^{n+1}) \le \mathrm{TV}(\bar u^n)$. A new wiggle always adds variation, so a <span class="term" data-g="tvd">TVD</span> scheme cannot create one. <b>Harten's lemma:</b> a scheme that can be written as
+$\bar u_i^{n+1} = \bar u_i^n - C_{i-\frac12}(\bar u_i^n - \bar u_{i-1}^n)$ with $0 \le C_{i-\frac12} \le 1$ is TVD.
+For MUSCL with the upwind flux ($a > 0$) and forward Euler, $C_{i-\frac12} = \nu\big[1 + \tfrac12\varphi(r_i)/r_i - \tfrac12\varphi(r_{i-1})\big]$. If</p>
+$$\varphi(r) = 0 \text{ for } r \le 0,\qquad 0 \le \varphi(r) \le \min(2r,\, 2) \text{ for } r > 0,$$
+<p>then the bracket lies in $[0, 2]$ and the scheme is TVD for $\nu \le \tfrac12$. This is <b>Sweby's TVD region</b> (Sweby 1984; the same region appears in the flux-limiter form of Lax–Wendroff, where
+the CFL limit is $\nu\le1$). Second-order accuracy additionally needs $\varphi(1) = 1$ and $\varphi$ smooth near $r = 1$; Sweby recommends limiters
+between minmod (the lower boundary) and superbee (the upper boundary). Fromm's central slope, $\varphi = (1+r)/2$, leaves the region — which is why it oscillates.</p>
+
+<figure class="widget" id="w-sweby">
+<figcaption><b>Sweby's diagram.</b> Left: limiter functions $\varphi(r)$. Light shading: the TVD region; darker: the second-order TVD region between minmod and superbee. Grey dashed:
+the linear schemes Lax–Wendroff ($\varphi = 1$), Beam–Warming ($\varphi = r$) and Fromm ($\varphi = \frac{1+r}{2}$), which leave the TVD region. Right: the selected limiter advecting a
+smooth bump, a square and a triangle once around a periodic domain (100 cells, MUSCL + upwind flux, SSP-RK3, $\nu = 0.45$), with the measured total variation before and after.
+Minmod is the most diffusive; superbee squares off even smooth bumps ("compressive").</figcaption>
+</figure>
+
+<h3>What order do we really get?</h3>
+<p>A limiter clips the slope at smooth extrema, so a TVD scheme is formally only first order <em>at extrema</em>; in the $L^1$ norm these few cells hardly matter and
+the observed rate on smooth data stays close to 2. For discontinuous solutions no scheme converges fast: the measured $L^1$ rates for a transported jump are about
+$\tfrac12$ (first order) and about $\tfrac23$ (MUSCL with minmod, van Leer, MC), because the smearing grows like $h^{1/2}$ and $h^{2/3}$, respectively.
+Nonlinear problems behave better at shocks: characteristics run <em>into</em> a shock and keep it sharp, so first-order schemes reach rate $\approx 1$ at shocks,
+but only $\approx 0.75$ at rarefactions at practical resolutions (corners at the fan edges; this is verified in <code>tests/conv/fv1d.test.js</code>).
+Measure it yourself:</p>
+
+<figure class="widget" id="w-rates">
+<figcaption><b>Measured convergence</b> for linear advection (one period, $\nu = 0.45$): $L^1$ error of the cell averages versus $h$, for first-order upwind
+(forward Euler) and MUSCL with four limiters and without limiter (SSP-RK3). With smooth data all MUSCL variants approach slope 2; with the square pulse the
+first-order scheme has slope $\approx\frac12$, the limited MUSCL schemes $\approx\frac23$, and the compressive superbee $\approx 1$.</figcaption>
+</figure>
+
+<h2 id="time">Time stepping: strong-stability-preserving Runge–Kutta</h2>
+<p>MUSCL as written above is a <em>semi-discrete</em> scheme, $\frac{\mathrm d\bar u}{\mathrm dt} = L(\bar u)$, an ODE system — the "method of lines". Forward Euler is only first order in time,
+so we need a higher-order ODE solver that does not destroy the TVD property. The <span class="term" data-g="ssprk">SSP Runge–Kutta</span> methods of Shu and Osher (1988) do this:
+they are convex combinations of forward-Euler steps,</p>
+$$\begin{aligned}
+\text{SSP-RK2:}\quad & u^{(1)} = u^n + \Delta t\,L(u^n), \quad u^{n+1} = \tfrac12 u^n + \tfrac12\big(u^{(1)} + \Delta t\,L(u^{(1)})\big),\\
+\text{SSP-RK3:}\quad & u^{(1)} = u^n + \Delta t\,L(u^n),\quad u^{(2)} = \tfrac34 u^n + \tfrac14\big(u^{(1)} + \Delta t\,L(u^{(1)})\big),\\
+& u^{n+1} = \tfrac13 u^n + \tfrac23\big(u^{(2)} + \Delta t\,L(u^{(2)})\big).
+\end{aligned}$$
+<p>If one forward-Euler step is TVD for $\Delta t \le \Delta t_{\text{FE}}$, every stage is TVD and so is any convex combination of them (the TV is a convex function):
+the whole RK step is TVD under the <em>same</em> time-step limit. The implementation in this course is <code>lib/core/time/rk.js</code> (<code>makeStepper('ssprk3', n)</code>). In the tests, MUSCL with any of the four limiters and forward Euler, SSP-RK2 or SSP-RK3 never increased the total variation at $\nu = 0.45$.</p>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<p>The classical RK4 is not SSP: it cannot be written as a convex combination of forward-Euler steps (no four-stage fourth-order method can; Gottlieb &amp; Shu 1998),
+so the argument above does not apply and, combined with a limiter, small oscillations can appear that forward Euler would not produce. Also, "TVD" says nothing about systems: for the Euler equations no TVD theory exists, and limiting
+primitive or characteristic variables is a well-tested heuristic, not a theorem.</p>
+</div>
+
+<h2 id="systems">Systems: the Euler equations</h2>
+<p>For gas dynamics (chapter 1) the unknowns are $\mathbf U = (\rho, \rho u, E)$ with flux $\mathbf F(\mathbf U) = (\rho u,\ \rho u^2 + p,\ u(E + p))$ and the
+ideal-gas law $p = (\gamma - 1)(E - \tfrac12\rho u^2)$, $\gamma = 1.4$. The FV update is literally the same, $\frac{\mathrm d\bar{\mathbf U}_i}{\mathrm dt} = -(\hat{\mathbf F}_{i+\frac12} - \hat{\mathbf F}_{i-\frac12})/h$, applied
+component-wise. The new ingredient is the Riemann problem. The flux Jacobian $\partial\mathbf F/\partial\mathbf U$ has the three eigenvalues</p>
+$$\lambda_1 = u - c,\qquad \lambda_2 = u,\qquad \lambda_3 = u + c,\qquad c = \sqrt{\gamma p/\rho},$$
+<p>so the solution of a Riemann problem consists of <b>three waves</b> separating four constant states: a left acoustic wave (a shock or a rarefaction fan), a
+<b>contact discontinuity</b> moving with the fluid (density jumps, but velocity and pressure do not) and a right acoustic wave. In Sod's shock tube
+$(\rho, u, p) = (1, 0, 1)$ for $x &lt; \tfrac12$ and $(0.125, 0, 0.1)$ for $x &gt; \tfrac12$ — a membrane separating high- from low-pressure gas bursts — the left wave
+is a rarefaction, the right wave a shock.</p>
+<p><b>The exact Riemann solver</b> (Toro 2009, chapter 4) exploits that $u$ and $p$ are continuous across the contact. Let $p^*$ be the pressure between the
+two acoustic waves. Across the left wave, the velocity change is a known function of $p^*$ — from the Rankine–Hugoniot conditions if $p^* > p_L$ (shock), from the
+isentropic relations if $p^* \le p_L$ (rarefaction) — and likewise on the right. Equating the two velocities gives one scalar equation
+$f_L(p^*) + f_R(p^*) + u_R - u_L = 0$, solved by Newton's method in a handful of iterations. For Sod: $p^* \approx 0.30313$, $u^* \approx 0.92745$.</p>
+<p><b>Approximate Riemann solvers</b> replace the exact fan by something cheaper:</p>
+<ul>
+<li><b>Rusanov</b>: $\hat{\mathbf F} = \tfrac12(\mathbf F_L + \mathbf F_R) - \tfrac12 S^+(\mathbf U_R - \mathbf U_L)$ with $S^+ = \max(|u_L| + c_L, |u_R| + c_R)$: one speed for all waves. Robust, diffusive.</li>
+<li><b>HLL</b> (Harten, Lax &amp; van Leer 1983): one averaged state between the slowest and fastest signal speeds $S_L, S_R$;
+$\hat{\mathbf F} = \frac{S_R\mathbf F_L - S_L\mathbf F_R + S_L S_R(\mathbf U_R - \mathbf U_L)}{S_R - S_L}$ when $S_L &lt; 0 &lt; S_R$. With Einfeldt's speed estimates it keeps density and pressure positive. It ignores the contact, which gets smeared.</li>
+<li><b>HLLC</b> (Toro, Spruce &amp; Speares 1994): HLL with the <b>C</b>ontact restored — two intermediate states separated by a middle wave of speed $S^*$. Resolves an isolated stationary contact exactly.</li>
+<li><b>Roe</b> (1981): solves the linearised problem $\mathbf U_t + \tilde A\,\mathbf U_x = 0$ exactly, with a cleverly averaged matrix $\tilde A(\mathbf U_L, \mathbf U_R)$:
+$\hat{\mathbf F} = \tfrac12(\mathbf F_L + \mathbf F_R) - \tfrac12\sum_k |\tilde\lambda_k|\,\tilde\alpha_k\,\tilde{\mathbf r}_k$ (eigenvalues, wave strengths and eigenvectors of $\tilde A$).
+Sharp — it resolves isolated shocks and contacts exactly — but it needs an entropy fix at sonic rarefactions, and it can produce negative pressures near vacuum (try the 123 problem).</li>
+</ul>
+
+<figure class="widget" id="w-sod">
+<figcaption><b>Shock tubes.</b> Density, velocity and pressure computed by the FV method (dots) and the exact Riemann solution (line); bottom right: the exact solution in the
+$x$–$t$ plane, coloured by density, with the three waves: rarefaction fan (thin lines), contact (dashed) and shock (thick). The horizontal line marks the current time.
+MUSCL limits the primitive variables $(\rho, u, p)$ and uses SSP-RK2. The readout shows the $L^1$ density error, the positivity of $\rho$ and $p$, and conservation:
+mass and energy are conserved to round-off as long as the waves stay inside the tube.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Sod, first order: the shock is spread over a few cells, the contact over many more, and the contact keeps spreading — it is a linear wave (no self-steepening), smeared like the square pulse above.
+That is why the measured $L^1$ rates for Sod are only about 0.65 (first order) and 0.85 (MUSCL) instead of 1 and 2.</li>
+<li>"Sod with sonic rarefaction", first order, Roe without entropy fix: a small stationary jump inside the fan at $x = 0.3$ — an expansion shock. HLLC, Godunov and Roe + fix do not show it.</li>
+<li>123 problem with Roe: the solver fails (negative pressure) — Roe's linearisation is not positivity preserving (Einfeldt et al. 1991). HLL, HLLC and Rusanov survive.</li>
+<li>"Stationary contact": HLLC, Roe and Godunov keep the density jump exactly in place (they know about the contact wave); HLL and Rusanov smear it more and more.
+On Sod the difference between HLL and HLLC is small, because there the contact moves fast ($u^* \approx 0.93$) and every first-order scheme smears a moving contact.</li>
+</ul>
+</div>
+
+<h2 id="twod">Two dimensions on Cartesian grids</h2>
+<p>On a grid of rectangles $C_{ij}$ of size $h_x\times h_y$, the integral form over a cell gives four face integrals instead of two point values:</p>
+$$\frac{\mathrm d\bar u_{ij}}{\mathrm dt} = -\frac{F_{i+\frac12,j} - F_{i-\frac12,j}}{h_x} - \frac{G_{i,j+\frac12} - G_{i,j-\frac12}}{h_y},$$
+<p>where $F_{i+\frac12,j}$ is the <em>average</em> of the normal flux $\mathbf F\cdot\mathbf e_x$ over the vertical face and $G$ the same for horizontal faces — exactly the
+divergence theorem from chapter 0 applied to a rectangle. The simplest second-order approximation evaluates the face average at the face midpoint
+(midpoint rule) with a 1D numerical flux in the normal direction; the reconstruction is done <b>dimension by dimension</b>, with a limited slope in $x$ for
+the vertical faces and a limited slope in $y$ for the horizontal faces. For linear transport $u_t + \nabla\cdot(\mathbf a u) = 0$ the upwind flux at a face with normal velocity $a_n$ is $a_n u^-$ if
+$a_n \ge 0$ and $a_n u^+$ otherwise. The CFL condition of this "unsplit" first-order scheme is
+$\Delta t\,\big(|a_x|/h_x + |a_y|/h_y\big) \le 1$ — in 2D the time step is (up to) twice as small as in 1D, because a cell loses material through two faces at once.</p>
+<p>The classic test is <b>Zalesak's slotted disk</b> (1979) in a solid-body rotation $\mathbf a = 2\pi(-(y - \tfrac12),\ x - \tfrac12)$: after one revolution the exact solution equals the initial
+one, so every difference is numerical error. The slot is only five cells wide at $100\times100$ resolution — a demanding test of numerical diffusion.</p>
+
+<figure class="widget" id="w-zalesak">
+<figcaption><b>Zalesak's slotted disk after one revolution.</b> Left: first-order upwind; right: MUSCL with the selected limiter; both SSP-RK3 with
+$\Delta t\,\max(|a_x|/h_x + |a_y|/h_y) = 0.45$, zero inflow data at the boundary. The white outline is the exact solution at the current time. The readout reports
+the $L^1$ error against the exact cell averages, the range of values (with the default settings both schemes stay within $[0, 1]$) and the mass balance: the mass inside the box plus the mass that left
+through the boundary equals the initial mass to round-off. The first-order scheme smears the disk so much that some of it reaches the boundary and flows out.</figcaption>
+</figure>
+
+<div class="box warn">
+<span class="box-title">What goes wrong</span>
+<p>The midpoint rule on faces limits the dimension-by-dimension scheme to second order no matter how accurate the reconstruction is: for higher order (WENO,
+DG) you need several quadrature points per face. And splitting the 2D problem into alternating 1D sweeps (Strang splitting) is a different scheme with
+its own (directional) error — both are used in practice.</p>
+</div>
+
+<h2 id="summary">Summary</h2>
+<ul>
+<li>FV methods evolve cell averages by the exact relation $\mathrm d\bar u_i/\mathrm dt = -(F_{i+\frac12} - F_{i-\frac12})/h$; the only approximation is the numerical flux. Conservation holds by construction.</li>
+<li>Godunov's REA: reconstruct, evolve exactly (Riemann problems at faces), average. The Godunov flux is $f$ of the Riemann solution at the face; upwind, Rusanov, Roe, HLL, HLLC are cheaper approximations.</li>
+<li>Explicit schemes need the CFL condition $\Delta t\max|f'| \le h$ (domain of dependence); upwind is a convex combination exactly when $\nu \le 1$.</li>
+<li>Upwind solves $u_t + a u_x = \frac{a h}2(1-\nu) u_{xx}$ to second order: first-order schemes are diffusive.</li>
+<li>Godunov's theorem: linear monotone schemes are at most first order. High resolution requires nonlinear limiters; Sweby's region $0\le\varphi\le\min(2r,2)$ guarantees TVD, SSP-RK keeps it in time.</li>
+<li>Systems need wave-aware fluxes (HLLC, Roe, exact) for sharp contacts, and positivity-preserving ones (HLL, HLLC, Rusanov) near vacuum.</li>
+<li>Next chapter: instead of reconstructing a polynomial from neighbours, DG methods <em>store</em> the polynomial in each cell — with exactly the same numerical fluxes on faces.</li>
+</ul>
+
+<h2 id="references">References</h2>
+<ul>
+<li>R. Courant, K. Friedrichs, H. Lewy, “Über die partiellen Differenzengleichungen der mathematischen Physik”, <i>Mathematische Annalen</i> 100 (1928).</li>
+<li>S. K. Godunov, “A difference method for numerical calculation of discontinuous solutions of the equations of hydrodynamics”, <i>Matematicheskii Sbornik</i> 47 (1959).</li>
+<li>R. F. Warming, B. J. Hyett, “The modified equation approach to the stability and accuracy analysis of finite-difference methods”, <i>J. Comput. Phys.</i> 14 (1974).</li>
+<li>G. A. Sod, “A survey of several finite difference methods for systems of nonlinear hyperbolic conservation laws”, <i>J. Comput. Phys.</i> 27 (1978).</li>
+<li>B. van Leer, “Towards the ultimate conservative difference scheme V. A second-order sequel to Godunov's method”, <i>J. Comput. Phys.</i> 32 (1979).</li>
+<li>S. T. Zalesak, “Fully multidimensional flux-corrected transport algorithms for fluids”, <i>J. Comput. Phys.</i> 31 (1979).</li>
+<li>P. L. Roe, “Approximate Riemann solvers, parameter vectors, and difference schemes”, <i>J. Comput. Phys.</i> 43 (1981).</li>
+<li>A. Harten, “High resolution schemes for hyperbolic conservation laws”, <i>J. Comput. Phys.</i> 49 (1983).</li>
+<li>A. Harten, P. D. Lax, B. van Leer, “On upstream differencing and Godunov-type schemes for hyperbolic conservation laws”, <i>SIAM Review</i> 25 (1983).</li>
+<li>P. K. Sweby, “High resolution schemes using flux limiters for hyperbolic conservation laws”, <i>SIAM J. Numer. Anal.</i> 21 (1984).</li>
+<li>C.-W. Shu, S. Osher, “Efficient implementation of essentially non-oscillatory shock-capturing schemes”, <i>J. Comput. Phys.</i> 77 (1988).</li>
+<li>B. Einfeldt, C.-D. Munz, P. L. Roe, B. Sjögreen, “On Godunov-type methods near low densities”, <i>J. Comput. Phys.</i> 92 (1991).</li>
+<li>E. F. Toro, M. Spruce, W. Speares, “Restoration of the contact surface in the HLL-Riemann solver”, <i>Shock Waves</i> 4 (1994).</li>
+<li>S. Gottlieb, C.-W. Shu, “Total variation diminishing Runge–Kutta schemes”, <i>Mathematics of Computation</i> 67 (1998).</li>
+<li>S. Gottlieb, C.-W. Shu, E. Tadmor, “Strong stability-preserving high-order time discretization methods”, <i>SIAM Review</i> 43 (2001).</li>
+<li>R. J. LeVeque, <i>Finite Volume Methods for Hyperbolic Problems</i>, Cambridge University Press (2002).</li>
+<li>E. F. Toro, <i>Riemann Solvers and Numerical Methods for Fluid Dynamics</i>, 3rd ed., Springer (2009).</li>
+</ul>
+
+</main>
+</body>
+</html>
