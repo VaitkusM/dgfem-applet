@@ -71,7 +71,7 @@ Two formulas convert integrals and derivatives:</p>
 <figure class="widget" id="w-refmap">
 <figcaption><b>The affine reference map</b>, like texture mapping a triangle. The coloured lines $\hat x = $ const, $\hat y = $ const and $\hat x+\hat y = $ const are mapped
 to the physical triangle. The orange arrow is $\nabla\varphi_1 = J^{-T}(1,0)^T$; it is perpendicular to the edge opposite vertex 1, as it must be (along that edge
-$\varphi_1 = 0$). Drag a vertex across the opposite edge: $\det J$ becomes negative — an <em>inverted element</em>, fatal for a mesh.</figcaption>
+$\varphi_1 = 0$). Drag a vertex across the opposite edge: $\det J$ passes through zero (a degenerate triangle: $J^{-1}$ does not exist) and becomes negative — an <em>inverted element</em>, fatal for a mesh.</figcaption>
 </figure>
 
 <h2 id="assembly">Assembly: building the matrix element by element</h2>
@@ -105,7 +105,8 @@ The read-out checks the cotangent formula and the zero row sums (this is the mat
 <em>elimination</em>: boundary DOFs get their values $g(\mathbf x_j)$, their rows are dropped and their known contributions are moved to the right-hand
 side. What remains is a system that is</p>
 <ul>
-<li><b>sparse:</b> about 7 nonzeros per row for P1 on a regular mesh (each vertex couples to itself and its ~6 neighbours), stored in <b>CSR</b> format
+<li><b>sparse:</b> about 7 nonzeros per row for P1 on a general mesh (each vertex couples to itself and its ~6 neighbours) — and only 5 on a grid of
+right triangles, where the couplings across the diagonals vanish because $\cot 90° = 0$ (set the mesh distortion to 0 below) —, stored in <b>CSR</b> format
 (row pointers, column indices, values — an adjacency list of the mesh graph);</li>
 <li><b>symmetric positive definite</b> (<span class="term" data-g="spd">SPD</span>): $\mathbf U^TA\mathbf U = \int|\nabla u_h|^2 > 0$;</li>
 <li><b>ill-conditioned:</b> $\kappa(A) \sim h^{-2}$. Halving $h$ quadruples the condition number.</li>
@@ -116,7 +117,11 @@ side. What remains is a system that is</p>
 <em>reverse Cuthill–McKee</em> (RCM) is a breadth-first traversal of the mesh graph. On our structured grid the natural row-by-row numbering
 is already banded; a mesh generator typically produces an arbitrary ("random") numbering — compare both with RCM below.</li>
 <li><b>Iterative:</b> the <span class="term" data-g="cgsolver">conjugate gradient</span> method needs only products $A\mathbf x$ and converges in $O(\sqrt{\kappa})= O(h^{-1})$ iterations.
-A <em>preconditioner</em> $M\approx A^{-1}$ reduces the count; multigrid or domain decomposition (chapter 10) make it independent of $h$.</li>
+A <em>preconditioner</em> is a cheap approximate inverse $M\approx A^{-1}$: CG is then applied to $MA$, whose condition number is hopefully much smaller.
+The simplest one, <em>Jacobi</em>, takes $M = \operatorname{diag}(A)^{-1}$. It repairs badly <em>scaled</em> rows (strongly varying coefficients or element sizes),
+but for the Poisson problem on a quasi-uniform mesh the diagonal is almost constant, so Jacobi changes next to nothing — the widget below shows two
+nearly identical curves on purpose. What is needed is a preconditioner that knows about the <em>long-range</em> coupling: multigrid or domain decomposition
+(chapter 10) make the iteration count independent of $h$.</li>
 </ul>
 
 <h2 id="convergence">Accuracy: what to expect</h2>
@@ -129,7 +134,8 @@ again approximated well. Both rates are verified live below and in the test suit
 <figure class="widget" id="w-poisson">
 <figcaption><b>The 2D Poisson solver.</b> Unit square, manufactured solution, Dirichlet data from the exact solution. Left: $u_h$, the pointwise error
 $u_h - u$, or the mesh. Right (tabs): the sparsity pattern of the reduced matrix for different numberings of the unknowns, the CG residual history with and without
-Jacobi preconditioning, and a convergence study with fitted slopes. Increase $N$ and watch the CG iteration count grow roughly linearly in $N$.</figcaption>
+Jacobi preconditioning (the two counts agree to within a few percent: a diagonal preconditioner cannot cure $\kappa\sim h^{-2}$), and a convergence study with fitted slopes.
+Increase $N$ and watch the CG iteration count grow roughly linearly in $N$.</figcaption>
 </figure>
 
 <div class="box try">
@@ -157,7 +163,7 @@ distorted meshes.</li>
 <li>CG FEM = Galerkin with continuous piecewise polynomials on a mesh; P1 basis = barycentric coordinates.</li>
 <li>All work happens on a reference element: $\int_K g = \int_{\hat K} g\circ F_K\,|\det J|$, $\nabla\varphi = J^{-T}\hat\nabla\hat\varphi$.</li>
 <li>Assembly = loop over elements + scatter-add; P1 stiffness = cotangent Laplacian.</li>
-<li>The system is sparse, SPD, with $\kappa\sim h^{-2}$; solve with sparse direct methods (after reordering) or preconditioned CG.</li>
+<li>The system is sparse, SPD, with $\kappa\sim h^{-2}$; solve with sparse direct methods (after reordering) or CG with a good preconditioner (not Jacobi).</li>
 <li>Error $O(h^p)$ in $H^1$ and $O(h^{p+1})$ in $L^2$ for smooth solutions.</li>
 </ul>
 

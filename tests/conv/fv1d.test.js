@@ -1,6 +1,6 @@
 import { test, assert, assertClose, assertRate } from '../harness.js';
 import { makeFV1D, cellAverages } from '../../lib/core/fv/fv1d.js';
-import { advection, burgers, burgersRiemann, godunovFlux, rusanovFlux, roeFlux, buckley } from '../../lib/core/models/scalar.js';
+import { advection, burgers, burgersRiemann, godunovFlux, rusanovFlux, roeFlux, upwindFlux, centralFlux, buckley } from '../../lib/core/models/scalar.js';
 import { makeStepper } from '../../lib/core/time/rk.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 
@@ -47,8 +47,9 @@ test('FV conserves the total mass to round-off (periodic, nonlinear)', () => {
 
 test('Godunov FV converges to the exact Burgers Riemann solution (shock and rarefaction)', () => {
   // Expected L1 rates of a first-order monotone scheme: ≈ 1 for a shock (self-sharpening),
-  // somewhat below 1 for a rarefaction (kinks at the fan edges; ~ h|log h| behaviour).
-  for (const [uL, uR, lo, hi] of [[1, -0.5, 0.85, 1.15], [-0.5, 1, 0.6, 1.1], [-1, 1, 0.6, 1.1]]) {
+  // about 0.75–0.8 for a rarefaction on these grids (kinks at the fan edges; ~ h|log h| behaviour).
+  // Measured: shock 1.00; fans 0.77 (−0.5|1) and 0.79 (−1|1). The fan window excludes rate 1 on purpose.
+  for (const [uL, uR, lo, hi] of [[1, -0.5, 0.9, 1.1], [-0.5, 1, 0.68, 0.9], [-1, 1, 0.68, 0.9]]) {
     const errs = [], hs = [];
     for (const N of [400, 800, 1600]) {
       const { u, fv } = run({ model: burgers, N, a: -1, b: 1, flux: 'godunov', bc: 'outflow' }, (x) => (x < 0 ? uL : uR), 0.5, 0.5);
@@ -77,5 +78,14 @@ test('numerical fluxes are consistent: F(u,u) = f(u)', () => {
       assertClose(godunovFlux(m, u, u), m.f(u), 1e-14);
       assertClose(rusanovFlux(m, u, u), m.f(u), 1e-14);
       assertClose(roeFlux(m, u, u, 0.3), m.f(u), 1e-14);
+      assertClose(upwindFlux(m, u, u), m.f(u), 1e-14);
+      assertClose(centralFlux(m, u, u), m.f(u), 1e-14);
     }
+});
+
+test('upwind flux for a nonlinear f is Roe\'s flux without entropy fix (Burgers), and the Godunov flux for linear advection', () => {
+  for (const uL of [-1.2, -0.4, 0.1, 0.7]) for (const uR of [-0.9, -0.1, 0.3, 1.5]) {
+    assertClose(upwindFlux(burgers, uL, uR), roeFlux(burgers, uL, uR, 0), 1e-14, 0, `Burgers ${uL}|${uR}`);
+    for (const a of [1, -0.7]) assertClose(upwindFlux(advection(a), uL, uR), godunovFlux(advection(a), uL, uR), 1e-15, 0, 'advection');
+  }
 });

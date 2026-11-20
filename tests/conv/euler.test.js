@@ -164,3 +164,14 @@ test('stationary contact: HLLC, Roe and Godunov keep it exactly; HLL and Rusanov
   }
   for (const flux of ['hll', 'rusanov']) assert(shockTube('contact', 100, flux, 'none').err > 1e-3, flux);
 });
+
+test('sonic rarefaction: Roe\'s expansion shock does not shrink under refinement; the "sonic glitch" of Godunov, HLLC, Roe+fix is O(h)', () => {
+  // largest density jump between neighbouring cells around the sonic point x = 0.3 (first order, CFL 0.5)
+  const jump = (flux, N) => { const U = shockTube('sonic', N, flux, 'none').U; let m = 0; for (let i = Math.round(0.25 * N); i < Math.round(0.35 * N); i++) m = Math.max(m, Math.abs(U[3 * i + 3] - U[3 * i])); return m; };
+  const roe = [200, 400, 800].map((N) => jump('roe', N));
+  assert(roe.every((j) => j > 0.15 && j < 0.18), `Roe expansion shock ${roe}`); // measured 0.166, independent of N
+  for (const flux of ['godunov', 'hllc', 'roefix']) {
+    const j = [200, 400, 800].map((N) => jump(flux, N));
+    assert(j[0] < 0.06 && j[1] < 0.6 * j[0] && j[2] < 0.65 * j[1], `${flux} kink ${j}`); // measured: halves with h
+  }
+});

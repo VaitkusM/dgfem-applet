@@ -111,7 +111,8 @@ with a large $\nu$). Remember this: we will come back to it with Godunov's theor
 <em>approximate</em> fluxes exist. Any numerical flux must be</p>
 <ul>
 <li><b>consistent</b>: $\hat F(u, u) = f(u)$ — two equal states give the physical flux;</li>
-<li><b>Lipschitz continuous</b> in both arguments (needed for convergence proofs);</li>
+<li><span class="term" data-g="lipschitz">Lipschitz continuous</span> in both arguments — its change is bounded by a constant times the change of the states,
+$|\hat F(u, v) - \hat F(u', v')| \le L\,(|u - u'| + |v - v'|)$: no jumps, no infinite slopes (needed for convergence proofs);</li>
 <li>and, for stability, preferably <b>monotone</b>: non-decreasing in $u^-$ and non-increasing in $u^+$. Writing the explicit Euler update as
 $\bar u_i^{n+1} = H(\bar u_{i-1}^n, \bar u_i^n, \bar u_{i+1}^n)$, a monotone flux makes $H$ non-decreasing in each argument under a CFL condition: the scheme is
 <b>monotone</b> — it cannot create new maxima or minima.</li>
@@ -120,13 +121,16 @@ $\bar u_i^{n+1} = H(\bar u_{i-1}^n, \bar u_i^n, \bar u_{i+1}^n)$, a monotone flu
 <table class="data text">
 <tr><th>flux</th><th>formula $\hat F(u_L, u_R)$</th><th>comment</th></tr>
 <tr><td>central</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big)$</td><td>consistent but <em>unconditionally unstable</em> with forward Euler: no upwinding at all</td></tr>
-<tr><td>upwind</td><td>$f(u_L)$ if $a \ge 0$, $f(u_R)$ if $a &lt; 0$</td><td>linear advection: take the state the wind comes from</td></tr>
-<tr><td>Lax–Friedrichs / Rusanov</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big) - \tfrac12\,\alpha\,(u_R - u_L)$, $\ \alpha = \max|f'(u)|$</td><td>central flux + numerical viscosity proportional to the fastest local speed (Rusanov / <em>local</em> LF: max over the two states; global LF: over the whole domain)</td></tr>
+<tr><td>upwind</td><td>$f(u_L)$ if $a \ge 0$, $f(u_R)$ if $a &lt; 0$</td><td>linear advection: take the state the wind comes from. (For nonlinear $f$ the playground's "Upwind" takes the wind direction from $f'$ at the mean state; for Burgers that is Roe's flux below.)</td></tr>
+<tr><td>Lax–Friedrichs / Rusanov</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big) - \tfrac12\,\alpha\,(u_R - u_L)$, $\ \alpha = \max|f'(u)|$</td><td>central flux + numerical viscosity proportional to the fastest local speed (Rusanov / <em>local</em> LF: max over all $u$ <em>between</em> $u_L$ and $u_R$ — for convex $f$ the two end states suffice; global LF: over the whole domain)</td></tr>
 <tr><td>Godunov</td><td>$\min_{u_L \le u \le u_R} f(u)$ if $u_L \le u_R$; $\ \max_{u_R \le u \le u_L} f(u)$ if $u_L > u_R$</td><td>exact Riemann solution at the face; this closed form (Osher's formula) holds for any continuous $f$</td></tr>
 <tr><td>Roe</td><td>$\tfrac12\big(f(u_L) + f(u_R)\big) - \tfrac12\,|\hat a|\,(u_R - u_L)$, $\ \hat a = \dfrac{f(u_R) - f(u_L)}{u_R - u_L}$</td><td>upwind with the Rankine–Hugoniot speed of the jump: solves a <em>linearised</em> Riemann problem exactly</td></tr>
 </table>
 <p>All of them except "central" have the form <em>central flux minus a dissipation term</em> $\tfrac12 Q\,(u_R - u_L)$ with a coefficient $Q\ge 0$: upwind/Roe use
-$Q = |\hat a|$, Rusanov uses $Q = \alpha \ge |\hat a|$ (more dissipative). The dissipation term is what damps the instability of the central flux.</p>
+$Q = |\hat a|$, Rusanov uses $Q = \alpha \ge |\hat a|$ (more dissipative; the inequality is the mean value theorem, $\hat a = f'(\xi)$ for some $\xi$ between the states).
+The dissipation term is what damps the instability of the central flux. Mind the "between": for a non-convex flux the fastest speed can hide <em>inside</em> the jump.
+The Buckley–Leverett flux of the playground has $f'(0) = f'(1) = 0$ but $f' \approx 2.08$ at $u \approx 0.39$; with $\alpha$ taken from the two end states only,
+the Rusanov flux for a jump from 1 to 0 would degenerate to the unstable central flux.</p>
 <p><b>Roe and expansion shocks.</b> Roe's flux treats every jump as a single wave of speed $\hat a$. For Burgers' equation with $u_L = -1 &lt; 0 &lt; u_R = 1$ the
 true solution is a rarefaction fan spreading in both directions, but $\hat a = (u_L + u_R)/2 = 0$, so Roe's flux is $\tfrac12 f(u_L) + \tfrac12 f(u_R) = \tfrac12$,
 which is exactly $f(u_L) = f(u_R)$: the jump produces no change at all and stays as a stationary, entropy-violating <b>expansion shock</b> forever.
@@ -139,7 +143,9 @@ a little dissipation is always added, and the fan opens. You can watch both in t
 <b>physical domain of dependence</b> is the single point where the characteristic through $(x_i, t^n)$ started. Courant, Friedrichs and Lewy (1928) observed that a
 convergent scheme must "see" that point: if $a\,n\Delta t > n h$, the information that determines the solution never reaches the scheme, and
 changing $u_0$ there would change the exact solution but not the numerical one. Hence the <span class="term" data-g="cfl">CFL condition</span></p>
-$$\nu = \frac{|a|\,\Delta t}{h} \le 1 \qquad\Longleftrightarrow\qquad \Delta t \le \frac{h}{|a|}\qquad\text{(nonlinear: } |a| \to \max_i |f'(\bar u_i)|).$$
+$$\nu = \frac{|a|\,\Delta t}{h} \le 1 \qquad\Longleftrightarrow\qquad \Delta t \le \frac{h}{|a|}\qquad\text{(nonlinear: } |a| \to \max_u |f'(u)| \text{ over the range of the data)}.$$
+<p>For a convex flux such as Burgers' the maximum over the range is attained at one of the cell values, $\max_i|f'(\bar u_i)|$. For a non-convex flux it is not: a
+Buckley–Leverett profile consisting only of the values 0 and 1 has $f'(\bar u_i) = 0$ in <em>every</em> cell, although the waves that emerge from its jumps travel with speeds up to 2.08.</p>
 <p>The CFL condition is <em>necessary</em>; for upwind it is also sufficient. Look at the update $\bar u_i^{n+1} = (1-\nu)\bar u_i^n + \nu\,\bar u_{i-1}^n$: for $0\le\nu\le1$ it is a
 <b>convex combination</b>, so $\min \bar u^n \le \bar u^{n+1}_i \le \max \bar u^n$ (a discrete maximum principle — nothing can grow). For $\nu > 1$ the weight $1-\nu$
 is negative. A Fourier mode $\bar u_j^n = g^n e^{\mathrm i j\theta}$ is multiplied per step by
@@ -151,9 +157,11 @@ $|1 - 2\nu|^n$: at $\nu = 1.2$ by a factor $1.4$ per step. At exactly $\nu = 1$ 
 <figure class="widget" id="w-playground">
 <figcaption><b>1D finite volume playground.</b> Bars: cell averages $\bar u_i$; line: exact solution (advection, Riemann problems) or a fine-grid reference (2000 cells, MUSCL–MC).
 Choose the PDE, the initial data, the numerical flux, first order (piecewise constant) or MUSCL with a limiter, the time integrator and the CFL number $\nu$
-(the time step is $\Delta t = \nu h/\max_i|f'(\bar u_i)|$). Push $\nu$ above 1 with forward Euler and watch the sawtooth mode explode; choose the central flux
+(the time step is $\Delta t = \nu h/\max|f'|$, the maximum taken over the range of the current data). Push $\nu$ above 1 with forward Euler and watch the sawtooth mode explode; choose the central flux
 to see that consistency alone is not enough. The readout tracks the total mass $\sum_i h\bar u_i$: it is conserved to round-off with periodic
-boundaries and changes exactly by $(f(u_L) - f(u_R))\,t$ for the Riemann problems (as long as the waves have not reached the boundary).</figcaption>
+boundaries and changes exactly by $(f(u_L) - f(u_R))\,t$ for the Riemann problems (as long as the — numerically smeared — waves have not reached the boundary; the readout says when they have).
+It also reports the total variation: the exact solution never increases it, so a growing TV is flagged as numerical oscillation, and the readout states for which $\nu$ the chosen combination is guaranteed
+to be free of oscillations ($\nu\le1$ for first order, $\nu\le\frac12$ for MUSCL with a limiter; see below).</figcaption>
 </figure>
 
 <div class="box try">
@@ -161,7 +169,8 @@ boundaries and changes exactly by $(f(u_L) - f(u_R))\,t$ for the Riemann problem
 <ul>
 <li>Advection, square pulse, first order, $\nu = 1$: the pulse moves without any change. Now $\nu = 0.5$: it smears. $\nu = 1.05$: it blows up after a while.</li>
 <li>Burgers, Riemann B (a transonic fan $-1 \to 1$), first order, Roe flux: a frozen expansion shock. Switch to "Roe + Harten entropy fix", Godunov or Rusanov.</li>
-<li>Buckley–Leverett, Riemann A: the solution is a <em>compound wave</em> — a rarefaction immediately followed by a shock — because the flux is not convex.</li>
+<li>Buckley–Leverett, Riemann A ($1\to0$): the solution is a <em>compound wave</em> — a rarefaction immediately followed by a shock — because the flux is not convex.
+Both end states have $f' = 0$, yet the shock moves with speed $\approx 1.37$: the reason why the time step must use the fastest speed <em>between</em> the states.</li>
 <li>MUSCL with limiter "none" on the square pulse: second order, but over- and undershoots appear. Now try minmod and superbee.</li>
 </ul>
 </div>
@@ -190,7 +199,8 @@ which is why the $L^1$ error of upwind for a discontinuity decreases only like $
 <figure class="widget" id="w-modeq">
 <figcaption><b>The modified equation in action.</b> The square pulse after one period ($t = 1$, $a = 1$) computed by upwind + forward Euler (bars), the exact
 solution (grey), and the exact solution of the <em>modified</em> advection–diffusion equation $u_t + u_x = D u_{xx}$ with $D = \frac h2(1-\nu)$, a sum of error functions (orange).
-The scheme follows the advection–diffusion curve almost perfectly: the readout compares the $L^1$ distances.</figcaption>
+For $N\gtrsim100$ the scheme follows the advection–diffusion curve almost perfectly (at $N = 100$, $\nu = 0.5$ the $L^1$ distance to it is about 800 times smaller than the distance to the exact solution);
+on coarse grids and for $\nu$ close to 1, where $D$ itself is small, the neglected $\mathcal O(h^2)$ dispersion term becomes visible. The readout compares the $L^1$ distances.</figcaption>
 </figure>
 
 <h2 id="barrier">Godunov's order barrier</h2>
@@ -286,7 +296,7 @@ $(\rho, u, p) = (1, 0, 1)$ for $x &lt; \tfrac12$ and $(0.125, 0, 0.1)$ for $x &g
 is a rarefaction, the right wave a shock.</p>
 <p><b>The exact Riemann solver</b> (Toro 2009, chapter 4) exploits that $u$ and $p$ are continuous across the contact. Let $p^*$ be the pressure between the
 two acoustic waves. Across the left wave, the velocity change is a known function of $p^*$ — from the Rankine–Hugoniot conditions if $p^* > p_L$ (shock), from the
-isentropic relations if $p^* \le p_L$ (rarefaction) — and likewise on the right. Equating the two velocities gives one scalar equation
+<em>isentropic</em> relations if $p^* \le p_L$ (rarefaction: the flow is smooth there, so the entropy of each fluid particle, measured by $p/\rho^\gamma$, stays constant) — and likewise on the right. Equating the two velocities gives one scalar equation
 $f_L(p^*) + f_R(p^*) + u_R - u_L = 0$, solved by Newton's method in a handful of iterations. For Sod: $p^* \approx 0.30313$, $u^* \approx 0.92745$.</p>
 <p><b>Approximate Riemann solvers</b> replace the exact fan by something cheaper:</p>
 <ul>
@@ -303,7 +313,7 @@ Sharp — it resolves isolated shocks and contacts exactly — but it needs an e
 <figcaption><b>Shock tubes.</b> Density, velocity and pressure computed by the FV method (dots) and the exact Riemann solution (line); bottom right: the exact solution in the
 $x$–$t$ plane, coloured by density, with the three waves: rarefaction fan (thin lines), contact (dashed) and shock (thick). The horizontal line marks the current time.
 MUSCL limits the primitive variables $(\rho, u, p)$ and uses SSP-RK2. The readout shows the $L^1$ density error, the positivity of $\rho$ and $p$, and conservation:
-mass and energy are conserved to round-off as long as the waves stay inside the tube.</figcaption>
+mass and energy are conserved to round-off as long as the waves stay inside the tube (the numerically smeared waves arrive at the boundary a little earlier than the exact ones; the readout says when they have).</figcaption>
 </figure>
 
 <div class="box try">
@@ -311,7 +321,8 @@ mass and energy are conserved to round-off as long as the waves stay inside the 
 <ul>
 <li>Sod, first order: the shock is spread over a few cells, the contact over many more, and the contact keeps spreading — it is a linear wave (no self-steepening), smeared like the square pulse above.
 That is why the measured $L^1$ rates for Sod are only about 0.65 (first order) and 0.85 (MUSCL) instead of 1 and 2.</li>
-<li>"Sod with sonic rarefaction", first order, Roe without entropy fix: a small stationary jump inside the fan at $x = 0.3$ — an expansion shock. HLLC, Godunov and Roe + fix do not show it.</li>
+<li>"Sod with sonic rarefaction", first order, Roe without entropy fix: a stationary jump inside the fan at $x = 0.3$ — an expansion shock (density jump $\approx 0.17$ between neighbouring cells at $N = 200$).
+Roe + fix and HLLC remove it; Godunov's method leaves only a much smaller kink there ($\approx 0.05$, the well-known "sonic glitch" of first-order schemes, which vanishes under refinement).</li>
 <li>123 problem with Roe: the solver fails (negative pressure) — Roe's linearisation is not positivity preserving (Einfeldt et al. 1991). HLL, HLLC and Rusanov survive.</li>
 <li>"Stationary contact": HLLC, Roe and Godunov keep the density jump exactly in place (they know about the contact wave); HLL and Rusanov smear it more and more.
 On Sod the difference between HLL and HLLC is small, because there the contact moves fast ($u^* \approx 0.93$) and every first-order scheme smears a moving contact.</li>

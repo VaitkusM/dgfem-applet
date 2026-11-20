@@ -111,8 +111,8 @@ function bc2dWidget(fig) {
     let eig = '';
     if (r.A.n <= 400) {
       const { lmin } = lambdaMinSym(r.A);
-      eig = `\nλ_min of (A+Aᵀ)/2 = ${fmt(lmin)} ${lmin > 0 ? '(coercive)' : '<b class="status-bad">(NOT positive!)</b>'}`;
-    }
+      eig = `\nλ_min of (A+Aᵀ)/2 = ${fmt(lmin)} ${lmin > 1e-10 ? '(coercive)' : '<b class="status-bad">(NOT positive!)</b>'}`;
+    } else eig = '\n(λ_min is only computed for ≤ 400 unknowns:\n reduce N to see it)';
     out.set(`L² error = ${e.L2.toExponential(2)}\nH¹ error = ${e.H1.toExponential(2)}\nmax |u_h − g| on ∂Ω = ${mism.toExponential(2)}\nsymmetric matrix: ${csrSymmetryError(r.A) < 1e-12 ? 'yes' : 'no'}${eig}`);
     if (st.conv) {
       tbl.innerHTML = `<table class="data"><tr><th>N</th><th>L² error</th><th>H¹ error</th></tr>${st.conv.rows.map((x) => `<tr><td>${x.N}</td><td>${x.L2.toExponential(2)}</td><td>${x.H1.toExponential(2)}</td></tr>`).join('')}
@@ -225,7 +225,8 @@ function hyperWidget(fig) {
     P.arrow(0.02, 0.85, 0.12, 0.85, { color: C[2] }); P.text(0.13, 0.85, 'inflow', { color: C[2] });
     P.arrow(0.86, 0.85, 0.96, 0.85, { color: C[1] }); P.text(0.85, 0.85, 'outflow', { color: C[1], align: 'right' });
     let err = 0; for (let i = 0; i < N; i++) err += Math.abs(u[i] - exact(d.xc[i], st.t)) / N;
-    out.set(`t = ${st.t.toFixed(2)}\nL¹ error = ${err.toExponential(2)}`);
+    let mx = 0; for (let i = 0; i < N; i++) mx = Math.max(mx, Math.abs(u[i]));
+    out.set(`t = ${st.t.toFixed(2)}\nL¹ error = ${err.toExponential(2)}\nmax |ū| = ${fmt(mx)}${mx > 1.05 ? '\n<span class="status-bad">(partly outside the plot range)</span>' : ''}`);
     selfCheck('hyper finite', Number.isFinite(err));
   }
   s1.onResize(draw);

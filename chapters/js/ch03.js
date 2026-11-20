@@ -17,9 +17,9 @@ import { drawSpy } from '../../lib/viz/spy.js';
 import { Plot } from '../../lib/viz/plot1d.js';
 import { Animator } from '../../lib/viz/anim.js';
 import { triGrid, triAffine } from '../../lib/core/mesh/structured.js';
-import { cgSpace, assembleVolume, solvePoissonCG, errorsCG, evalCG, refBasis } from '../../lib/core/elliptic/cg.js';
+import { cgSpace, physBasis, solvePoissonCG, errorsCG, evalCG, refBasis } from '../../lib/core/elliptic/cg.js';
 import { POISSON_MMS } from '../../lib/core/verify/mms.js';
-import { csrExtract, csrPermute, csrMatVec, nnz } from '../../lib/core/la/sparse.js';
+import { csrPermute, nnz } from '../../lib/core/la/sparse.js';
 import { rcm } from '../../lib/core/la/direct.js';
 import { cg as cgSolve, jacobiPrecond } from '../../lib/core/la/krylov.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
@@ -118,13 +118,16 @@ function refMapWidget(fig) {
     lines((a, b, fam) => { const pa = map(a), pb = map(b); ctx.strokeStyle = C[fam]; ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.moveTo(v2.X(pa[0]), v2.Y(pa[1])); ctx.lineTo(v2.X(pb[0]), v2.Y(pb[1])); ctx.stroke(); ctx.globalAlpha = 1; });
     st.P.forEach((p, i) => { ctx.fillStyle = '#fff'; ctx.strokeStyle = T.ink; ctx.beginPath(); ctx.arc(v2.X(p[0]), v2.Y(p[1]), 6, 0, 7); ctx.fill(); ctx.stroke(); ctx.fillStyle = T.ink; ctx.fillText(`v${'₀₁₂'[i]}`, v2.X(p[0]) + 8, v2.Y(p[1]) - 8); });
     // gradient of φ₁ (= λ₁): reference gradient (1,0) mapped by J^{−T}
+    const degenerate = Math.abs(det) < 1e-9; // the three vertices are collinear: J is singular, no gradient exists
     const Jinv = [J[3] / det, -J[1] / det, -J[2] / det, J[0] / det];
     const g1 = [Jinv[0] * 1 + Jinv[2] * 0, Jinv[1] * 1 + Jinv[3] * 0];
     const cx = (A[0] + B[0] + Cc[0]) / 3, cy = (A[1] + B[1] + Cc[1]) / 3;
     ctx.strokeStyle = ctx.fillStyle = T.accent2; ctx.lineWidth = 2;
     const gl = Math.hypot(g1[0], g1[1]) || 1, sc = 0.6 / gl;
-    if (Number.isFinite(gl)) arrow(ctx, v2.X(cx), v2.Y(cy), v2.X(cx + g1[0] * sc), v2.Y(cy + g1[1] * sc), 8);
-    out.set(`J = [ ${fmt(J[0])}  ${fmt(J[1])} ]\n    [ ${fmt(J[2])}  ${fmt(J[3])} ]\ndet J = ${fmt(det)}  (= 2·area${det < 0 ? ', NEGATIVE: inverted!' : ''})\n∇φ₁ = J⁻ᵀ(1,0) = (${fmt(g1[0])}, ${fmt(g1[1])})\n(orange arrow, ⟂ to edge v₀v₂)`);
+    if (!degenerate && Number.isFinite(gl)) arrow(ctx, v2.X(cx), v2.Y(cy), v2.X(cx + g1[0] * sc), v2.Y(cy + g1[1] * sc), 8);
+    out.set(`J = [ ${fmt(J[0])}  ${fmt(J[1])} ]\n    [ ${fmt(J[2])}  ${fmt(J[3])} ]\ndet J = ${fmt(det)}  (= ${det < 0 ? '−' : ''}2·area${det < 0 ? ', NEGATIVE: inverted!' : ''})\n` + (degenerate
+      ? '<span class="status-bad">degenerate triangle (zero area):\nJ is singular, ∇φ₁ does not exist</span>'
+      : `∇φ₁ = J⁻ᵀ(1,0) = (${fmt(g1[0])}, ${fmt(g1[1])})\n(orange arrow, ⟂ to edge v₀v₂)`));
     selfCheck('refmap det finite', Number.isFinite(det));
   }
   onPointer(s2.canvas, {
@@ -146,17 +149,18 @@ function assemblyWidget(fig) {
   const p2 = L.panel('global matrix $A$ (16 × 16, all vertices): accumulated entries');
   const s2 = createCanvas(p2, { aspect: 0.9 });
   const mesh = triGrid(3, 3, [0, 1, 0, 1], { diag: 'alt', jiggle: 0.22, seed: 11 });
-  const nV = mesh.nVert;
+  const nV = mesh.nVert, space = cgSpace(mesh, 1);
   const st = { k: 0, A: new Float64Array(nV * nV), local: null };
   const out = readout(L.controls);
   const row = buttonRow(L.controls);
   const stepFn = () => {
     if (st.k >= mesh.nTri) return false;
     const t = st.k;
-    // local P1 stiffness: K_ij = |T| ∇λ_i·∇λ_j  (constant gradients)
-    const aff = triAffine(mesh.nodes, mesh.tris, t);
-    const grads = [[-1, -1], [1, 0], [0, 1]].map(([gx, gy]) => [aff.Jinv[0] * gx + aff.Jinv[2] * gy, aff.Jinv[1] * gx + aff.Jinv[3] * gy]);
-    const area = Math.abs(aff.det) / 2, K = [];
+    // local P1 stiffness: K_ij = |T| ∇λ_i·∇λ_j  (constant gradients ∇λ_i = J⁻ᵀ ∇̂λ̂_i, from the library that
+    // the Poisson solver below uses — so the cotangent check tests the real assembly ingredients)
+    const B = physBasis(space, t, 1 / 3, 1 / 3);
+    const grads = [0, 1, 2].map((i) => [B.gx[i], B.gy[i]]);
+    const area = Math.abs(B.det) / 2, K = [];
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) K.push(area * (grads[i][0] * grads[j][0] + grads[i][1] * grads[j][1]));
     const vs = [0, 1, 2].map((i) => mesh.tris[3 * t + i]);
     for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) st.A[vs[i] * nV + vs[j]] += K[3 * i + j];
@@ -334,5 +338,3 @@ initChapter(() => {
   mount('w-assembly', assemblyWidget);
   mount('w-poisson', poissonWidget);
 });
-
-export { csrExtract, csrMatVec, assembleVolume };

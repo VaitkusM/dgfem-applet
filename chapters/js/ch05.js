@@ -17,10 +17,10 @@ import { drawFunction, drawQuadField } from '../../lib/viz/field2d.js';
 import { colorbar } from '../../lib/viz/colormap.js';
 import { Plot } from '../../lib/viz/plot1d.js';
 import { Animator } from '../../lib/viz/anim.js';
-import { advection, burgers, buckley, burgersRiemann, scalarRiemann, SCALAR_FLUXES } from '../../lib/core/models/scalar.js';
+import { advection, burgers, buckley, burgersRiemann, scalarRiemann, maxWaveSpeed, SCALAR_FLUXES } from '../../lib/core/models/scalar.js';
 import {
-  makeFV1D, cellAverages, LIMITERS, LIMITER_PHI, advanceFV1D, totalVariation,
-  upwindNumericalDiffusion, diffusedSquare,
+  makeFV1D, cellAverages, coarsenAverages, LIMITERS, LIMITER_PHI, advanceFV1D, totalVariation,
+  upwindNumericalDiffusion, diffusedSquare, reaStepExact, reaStepFormula,
 } from '../../lib/core/fv/fv1d.js';
 import { makeStepper } from '../../lib/core/time/rk.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
@@ -56,26 +56,10 @@ function reaWidget(fig) {
     const a = v - st.u[(i - 1 + M) % M], b = st.u[(i + 1) % M] - v;
     return st.recon === 'minmod' ? LIMITERS.minmod.fn(a, b) : 0.5 * (a + b);
   });
-  /** reconstruction at x (periodic in [0, M)) */
-  const recon = (x, sig) => { const y = ((x % M) + M) % M, i = Math.min(M - 1, Math.floor(y)); return st.u[i] + sig[i] * (y - i - 0.5); };
-  /** new averages: exact cell integrals of the shifted reconstruction (shift s = ν), split at the kink x = i + s */
-  const average = (sig) => {
-    const s = st.nu, g = [-1 / Math.sqrt(3), 1 / Math.sqrt(3)], out = [];
-    for (let i = 0; i < M; i++) {
-      let v = 0;
-      for (const [a, b] of [[i, i + s], [i + s, i + 1]]) for (const q of g) {
-        const x = 0.5 * (a + b) + 0.5 * (b - a) * q;
-        v += 0.5 * (b - a) * recon(x - s, sig);
-      }
-      out.push(v);
-    }
-    return out;
-  };
+  /** new averages: exact cell integrals of the shifted reconstruction (lib/core/fv/fv1d.js) */
+  const average = (sig) => Array.from(reaStepExact(st.u, sig, st.nu));
   /** closed-form update ū_i − ν(ū_i − ū_{i−1}) − ν(1−ν)/2 (σ_i − σ_{i−1}) */
-  const formula = (sig) => st.u.map((v, i) => {
-    const im = (i - 1 + M) % M;
-    return v - st.nu * (v - st.u[im]) - 0.5 * st.nu * (1 - st.nu) * (sig[i] - sig[im]);
-  });
+  const formula = (sig) => Array.from(reaStepFormula(st.u, sig, st.nu));
   segmented(L.controls, {
     label: 'reconstruction', value: st.recon,
     options: [{ value: 'const', label: 'constant' }, { value: 'minmod', label: 'linear, minmod' }, { value: 'central', label: 'linear, central' }],
@@ -178,7 +162,8 @@ function playgroundWidget(fig) {
   p1.style.flex = '1 1 420px';
   const st = { model: 'adv', init: 'square', flux: 'upwind', recon: 'none', limiter: 'minmod', rk: 'fe', cfl: 0.8, N: 100 };
   let sim = null;
-  const fluxOpts = Object.keys(SCALAR_FLUXES).map((k) => ({ value: k, label: SCALAR_FLUXES[k].label }));
+  // "upwind" for a nonlinear flux takes the wind direction from f' at the mean state: for Burgers that is Roe's flux
+  const fluxOpts = Object.keys(SCALAR_FLUXES).map((k) => ({ value: k, label: k === 'upwind' ? 'Upwind (nonlinear f: like Roe, no fix)' : SCALAR_FLUXES[k].label }));
   select(L.controls, { label: 'PDE', value: st.model, options: Object.keys(MODELS).map((k) => ({ value: k, label: MODELS[k].label })), onChange: (v) => { st.model = v; reset(); } });
   select(L.controls, { label: 'initial data', value: st.init, options: Object.keys(INITS).map((k) => ({ value: k, label: INITS[k].label })), onChange: (v) => { st.init = v; reset(); } });
   select(L.controls, { label: 'numerical flux', value: st.flux, options: fluxOpts, onChange: (v) => { st.flux = v; reset(); } });
@@ -220,11 +205,13 @@ function playgroundWidget(fig) {
       const rf = makeFV1D({ model: m, N: 2000, flux: st.model === 'bl' ? 'rusanov' : 'godunov', recon: 'muscl', limiter: 'mc' });
       ref = { fv: rf, u: cellAverages(u0, rf.xf), t: 0, step: makeStepper('ssprk3', 2000) };
     }
-    // fastest characteristic speed over the range of the data (for the stopping time of Riemann problems)
-    let smax = 0; for (let k = 0; k <= 100; k++) smax = Math.max(smax, Math.abs(m.df(k / 100 * (Math.max(1, uL, uR) - Math.min(0, uL, uR)) + Math.min(0, uL, uR))));
-    const tEnd = I.periodic ? 20 : 0.95 / smax;
+    // fastest characteristic speed between the two states: Riemann problems stop when the fastest wave has
+    // crossed 80% of the half-domain, so that the boundary fluxes are still f(u_L) and f(u_R)
+    const smax = maxWaveSpeed(m, uL, uR);
+    const tEnd = I.periodic ? 20 : 0.8 / smax;
     const lo = Math.min(0, uL, uR), hi = Math.max(1, uL, uR), pad = 0.25 * (hi - lo);
     sim = { m, fv, u, t: 0, steps: 0, exact, ref, tEnd, uL, uR, periodic: I.periodic, mass0: u.reduce((s, v) => s + v, 0) * fv.h,
+      tv0: totalVariation(u, I.periodic),
       step: makeStepper(st.rk, st.N), blown: false, ylim: [lo - pad, hi + pad] };
     anim.stepsPerFrame = Math.max(1, Math.min(20, Math.round(st.N / (st.cfl * 150))));
     draw();
@@ -260,18 +247,32 @@ function playgroundWidget(fig) {
     for (let i = 0; i < fv.N; i++) { mass += S.u[i] * fv.h; mn = Math.min(mn, S.u[i]); mx = Math.max(mx, S.u[i]); }
     let l1 = NaN;
     if (S.exact) { const ex = cellAverages((x) => S.exact(x, S.t), fv.xf); l1 = 0; for (let i = 0; i < fv.N; i++) l1 += Math.abs(S.u[i] - ex[i]) * fv.h; }
-    else { l1 = 0; const r = 2000 / fv.N; for (let i = 0; i < fv.N; i++) { let a = 0; for (let k = 0; k < r; k++) a += S.ref.u[i * r + k]; l1 += Math.abs(S.u[i] - a / r) * fv.h; } }
+    else { l1 = 0; const rc = coarsenAverages(S.ref.u, fv.N); for (let i = 0; i < fv.N; i++) l1 += Math.abs(S.u[i] - rc[i]) * fv.h; }
     let cons;
     if (S.periodic) cons = `mass Σhūᵢ = ${mass.toFixed(12)}\n  change ${(mass - S.mass0).toExponential(1)} (periodic: 0)`;
     else {
-      const expect = (S.m.f(S.uL) - S.m.f(S.uR)) * S.t;
-      cons = `mass change ${(mass - S.mass0).toFixed(10)}\n(f(u_L)−f(u_R))·t = ${expect.toFixed(10)}`;
-      if (!S.blown && S.steps > 0) selfCheck('playground boundary-flux balance', Math.abs(mass - S.mass0 - expect) < 1e-9);
+      const expect = (S.m.f(S.uL) - S.m.f(S.uR)) * S.t, N = fv.N;
+      // the balance holds while the two cells next to each boundary (the flux stencil) still carry u_L and u_R
+      const quiet = [0, 1].every((k) => Math.abs(S.u[k] - S.uL) < 1e-12 && Math.abs(S.u[N - 1 - k] - S.uR) < 1e-12);
+      cons = `mass change ${(mass - S.mass0).toFixed(10)}\n` + (quiet ? `(f(u_L)−f(u_R))·t = ${expect.toFixed(10)}`
+        : '(smeared waves have reached the boundary:\n the simple balance no longer applies)');
+      if (!S.blown && S.steps > 0 && quiet) selfCheck('playground boundary-flux balance', Math.abs(mass - S.mass0 - expect) < 1e-9);
     }
     if (S.periodic && !S.blown && S.steps > 0) selfCheck('playground mass conservation', Math.abs(mass - S.mass0) < 1e-10);
-    const status = S.blown ? `<span class="status-bad">BLOW-UP after ${S.steps} steps</span>`
-      : S.t >= S.tEnd - 1e-12 ? 'final time reached' : '';
-    out.set(`t = ${S.t.toFixed(3)}   steps = ${S.steps}\nΔt = ν h / max|f'| (ν = ${st.cfl})\nmin ū = ${fmt(mn, 4)}   max ū = ${fmt(mx, 4)}\nTV = ${fmt(totalVariation(S.u, S.periodic), 4)}\nL¹ error = ${fmt(l1, 3)}\n${cons}\n${status}`);
+    // the exact solution of a scalar conservation law never increases its total variation, so growth is numerical
+    const tv = totalVariation(S.u, S.periodic);
+    // largest ν for which this combination is guaranteed TVD / monotone (see the text): 1 for first order,
+    // ½ for MUSCL (Sweby's bound; SSP-RK keeps the forward-Euler limit); the central flux has no such range
+    const nuMax = st.flux === 'central' ? 0 : st.recon === 'muscl' ? 0.5 : 1;
+    const hint = st.flux === 'central' ? 'central flux: no dissipation, not TVD for any ν'
+      : st.cfl > nuMax + 1e-9 ? `<span class="status-bad">ν = ${st.cfl} exceeds the guaranteed range ν ≤ ${nuMax}</span>`
+        : `guaranteed non-oscillatory for ν ≤ ${nuMax}${st.recon === 'muscl' && st.limiter === 'none' ? ' — with a limiter' : ''}`;
+    const noFix = (st.flux === 'roe' || st.flux === 'upwind') && st.model !== 'adv'
+      ? 'no entropy fix: a transonic rarefaction stays\n a (wrong) stationary expansion shock' : '';
+    const status = [hint, noFix, S.blown ? `<span class="status-bad">BLOW-UP after ${S.steps} steps (|ū| > 10⁶ or not a number)</span>`
+      : tv > 1.05 * S.tv0 + 1e-9 ? `<span class="status-bad">oscillations: TV grew from ${fmt(S.tv0, 3)} to ${fmt(tv, 3)}</span>` : '',
+    S.t >= S.tEnd - 1e-12 ? 'final time reached' : ''].filter(Boolean).join('\n');
+    out.set(`t = ${S.t.toFixed(3)}   steps = ${S.steps}\nΔt = ν h / max|f'| (ν = ${st.cfl})\nmin ū = ${fmt(mn, 4)}   max ū = ${fmt(mx, 4)}\nTV = ${fmt(tv, 4)}\nL¹ error = ${S.blown ? '—' : fmt(l1, 3)}\n${cons}\n${status}`);
   }
   s1.onResize(draw);
   reset();
@@ -310,8 +311,10 @@ function modEqWidget(fig) {
     P.legend([{ label: 'upwind + forward Euler', color: C[0] }, { label: 'exact (advection)', color: T.faint }, { label: 'modified equation u_t + u_x = D u_xx', color: C[1], dash: [6, 3] }], 'tr');
     const ex = cellAverages(sq, fv.xf), adc = cellAverages(ad, fv.xf);
     let e1 = 0, e2 = 0; for (let i = 0; i < st.N; i++) { e1 += Math.abs(u[i] - ex[i]) * fv.h; e2 += Math.abs(u[i] - adc[i]) * fv.h; }
-    out.set(`h = ${fmt(fv.h)}, ν = ${fmt(nu, 4)}, ${n} steps\nD = (a h/2)(1 − ν) = ${fmt(D, 4)}\n\nL¹ distance to\n  exact solution   ${fmt(e1, 3)}\n  modified eq.     ${fmt(e2, 3)}`);
-    selfCheck('modified equation predicts upwind', nu === 1 || e2 < 0.01 * e1);
+    out.set(`h = ${fmt(fv.h)}, ν = ${fmt(nu, 4)}, ${n} steps\nD = (a h/2)(1 − ν) = ${fmt(D, 4)}\n\nL¹ distance to\n  exact solution   ${fmt(e1, 3)}\n  modified eq.     ${fmt(e2, 3)}${e1 > 0 && e2 > 0 ? `\n  ratio            1 : ${fmt(e1 / e2, 2)}` : ''}`);
+    // the modified equation is always the better model; for N ≥ 100 its error is at most 10% of the distance to the
+    // exact solution over the whole ν-range (≈ 0.1% at the default N = 100, ν = 0.5; tested in fv1d-hires.test.js)
+    selfCheck('modified equation predicts upwind', nu === 1 || e2 < (st.N >= 100 ? 0.1 : 0.5) * e1);
   }
   s1.onResize(draw);
   draw();
@@ -499,16 +502,18 @@ function sodWidget(fig) {
     const lims = rng.map(([a, b]) => { const pd = 0.12 * (b - a || 1); return [a - pd, b + pd]; });
     const stats0 = eulerStats(U, fv.h);
     const UL = primToCons(...P.WL), UR = primToCons(...P.WR), FL = physFlux(UL, [0, 0, 0]), FR = physFlux(UR, [0, 0, 0]);
-    S = { P, fv, U, ex, t: 0, steps: 0, failed: false, lims, stats0, FL, FR, step: makeStepper(st.recon === 'muscl' ? 'ssprk2' : 'fe', 3 * st.N) };
+    S = { P, fv, U, ex, t: 0, steps: 0, failed: false, lims, stats0, FL, FR, UL, UR, step: makeStepper(st.recon === 'muscl' ? 'ssprk2' : 'fe', 3 * st.N) };
     const smax = fv.maxSpeed(U) * 1.5; // rough estimate of the number of steps for the animation speed
     anim.stepsPerFrame = Math.max(1, Math.ceil(P.T * smax / (st.cfl * fv.h) / 120));
   }
   function advance() {
     if (S.failed || S.t >= S.P.T - 1e-14) return false;
     const dt = Math.min(st.cfl * S.fv.h / S.fv.maxSpeed(S.U), S.P.T - S.t);
-    S.step(S.U, S.t, dt, S.fv.rhs); S.t += dt; S.steps++;
+    // a flux may throw on non-physical face states (the exact Riemann solver refuses vacuum): that is a failed run too
+    try { S.step(S.U, S.t, dt, S.fv.rhs); } catch (err) { S.failed = true; return false; }
+    S.t += dt; S.steps++;
     const s = eulerStats(S.U, S.fv.h);
-    if (!s.finite || s.minRho <= 0 || s.minP <= 0) { S.failed = true; return false; }
+    if (!(dt > 0) || !s.finite || s.minRho <= 0 || s.minP <= 0) { S.failed = true; return false; }
     if (S.t >= S.P.T - 1e-14) return false;
   }
   function runToEnd() {
@@ -561,10 +566,17 @@ function sodWidget(fig) {
     const R = eulerCellAverages((x) => (S.t > 0 ? ex.sample((x - P.x0) / S.t) : (x < P.x0 ? P.WL : P.WR)), fv.xf);
     let l1 = 0; for (let i = 0; i < fv.N; i++) l1 += Math.abs(U[3 * i] - R[3 * i]) * fv.h;
     // with constant boundary states the totals change by (F_L − F_R) t exactly
+    // … as long as the two cells next to each boundary (the flux stencil) still carry the initial states: the
+    // numerically smeared waves arrive earlier than the exact ones (coarse grids, 123 problem, blast wave)
+    const N = fv.N, same = (i, W) => [0, 1, 2].every((c) => Math.abs(U[3 * i + c] - W[c]) <= 1e-12 * Math.max(1, Math.abs(W[c])));
+    const quiet = same(0, S.UL) && same(1, S.UL) && same(N - 1, S.UR) && same(N - 2, S.UR);
     const dM = sN.mass - S.stats0.mass - (S.FL[0] - S.FR[0]) * S.t, dE = sN.energy - S.stats0.energy - (S.FL[2] - S.FR[2]) * S.t;
+    const balance = S.failed ? 'mass   − expected: —\nenergy − expected: —'
+      : quiet ? `mass   − expected: ${dM.toExponential(1)}\nenergy − expected: ${dE.toExponential(1)}`
+        : '(smeared waves have reached the boundary:\n the simple mass/energy balance no longer applies)';
     const status = S.failed ? '<span class="status-bad">FAILED: negative density/pressure or NaN</span>' : S.t >= P.T - 1e-14 ? 'final time reached' : '';
-    out.set(`t = ${S.t.toFixed(4)} / ${P.T}   steps = ${S.steps}\np* = ${fmt(ex.pStar, 5)}, u* = ${fmt(ex.uStar, 5)}\nwaves: ${Math.abs(ex.pStar - P.WL[2]) <= 1e-10 * P.WL[2] ? '—' : ex.left} | contact | ${Math.abs(ex.pStar - P.WR[2]) <= 1e-10 * P.WR[2] ? '—' : ex.right}\nL¹ error of ρ = ${fmt(l1, 3)}\nmin ρ = ${fmt(sN.minRho, 3)}, min p = ${fmt(sN.minP, 3)}\nmass   − expected: ${S.failed ? '—' : dM.toExponential(1)}\nenergy − expected: ${S.failed ? '—' : dE.toExponential(1)}\n${status}`);
-    if (!S.failed) selfCheck('Euler FV conservation', Math.abs(dM) < 1e-11 && Math.abs(dE) < 1e-9 * Math.max(1, Math.abs(sN.energy)));
+    out.set(`t = ${S.t.toFixed(4)} / ${P.T}   steps = ${S.steps}\np* = ${fmt(ex.pStar, 5)}, u* = ${fmt(ex.uStar, 5)}\nwaves: ${Math.abs(ex.pStar - P.WL[2]) <= 1e-10 * P.WL[2] ? '—' : ex.left} | contact | ${Math.abs(ex.pStar - P.WR[2]) <= 1e-10 * P.WR[2] ? '—' : ex.right}\nL¹ error of ρ = ${fmt(l1, 3)}\nmin ρ = ${fmt(sN.minRho, 3)}, min p = ${fmt(sN.minP, 3)}\n${balance}\n${status}`);
+    if (!S.failed && quiet) selfCheck('Euler FV conservation', Math.abs(dM) < 1e-11 && Math.abs(dE) < 1e-9 * Math.max(1, Math.abs(sN.energy)));
   }
   surfs.forEach((s) => s.onResize(() => S && draw()));
   runToEnd();
@@ -646,7 +658,8 @@ function zalesakWidget(fig) {
       return { e: e / (n * n), lo, hi, m: m / (n * n) };
     };
     const A = info(S.ua), B = info(S.ub);
-    out.set(`t = ${t.toFixed(3)} (${(t * 100).toFixed(0)}% of a revolution)\n${S.k} / ${S.nSteps} steps\n\n            upwind    MUSCL\nL¹ error   ${A.e.toFixed(4)}    ${B.e.toFixed(4)}\nmin        ${fmt(A.lo, 2).padEnd(9)} ${fmt(B.lo, 2)}\nmax        ${A.hi.toFixed(4)}    ${B.hi.toFixed(4)}\nmass       ${A.m.toFixed(6)}  ${B.m.toFixed(6)}\n+ outflow  ${S.outA.toFixed(6)}  ${S.outB.toFixed(6)}\n= ${(A.m + S.outA).toFixed(12)}\n  ${(B.m + S.outB).toFixed(12)}\n(initial mass ${S.mass0.toFixed(12)})`);
+    const z = (v) => (Math.abs(v) < 1e-12 ? 0 : v); // round-off level undershoots (e.g. −1e-49) are shown as 0
+    out.set(`t = ${t.toFixed(3)} (${(t * 100).toFixed(0)}% of a revolution)\n${S.k} / ${S.nSteps} steps\n\n            upwind    MUSCL\nL¹ error   ${A.e.toFixed(4)}    ${B.e.toFixed(4)}\nmin        ${fmt(z(A.lo), 2).padEnd(9)} ${fmt(z(B.lo), 2)}\nmax        ${A.hi.toFixed(4)}    ${B.hi.toFixed(4)}\nmass       ${A.m.toFixed(6)}  ${B.m.toFixed(6)}\n+ outflow  ${S.outA.toFixed(6)}  ${S.outB.toFixed(6)}\n= ${(A.m + S.outA).toFixed(12)}\n  ${(B.m + S.outB).toFixed(12)}\n(initial mass ${S.mass0.toFixed(12)})`);
     selfCheck('zalesak finite & mass balance', Number.isFinite(A.e + B.e) && Math.abs(A.m + S.outA - S.mass0) < 1e-12 && Math.abs(B.m + S.outB - S.mass0) < 1e-12);
   }
   sa.onResize(() => S && draw()); sb.onResize(() => S && draw());
