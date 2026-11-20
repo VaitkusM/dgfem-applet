@@ -8,12 +8,11 @@
  *  - w-forms    : the same 1D problem in strong (FD), weak (CG) and mixed form; solutions and fluxes
  */
 import { initChapter, mount, selfCheck } from '../../lib/ui/chapter.js';
-import { widgetLayout, slider, select, button, buttonRow, readout, fmt, h } from '../../lib/ui/controls.js';
+import { widgetLayout, slider, select, button, buttonRow, readout, h } from '../../lib/ui/controls.js';
 import { createCanvas, theme, onPointer, seriesColors } from '../../lib/viz/canvas.js';
 import { Plot } from '../../lib/viz/plot1d.js';
-import { solvePoisson1D, errors1D } from '../../lib/core/elliptic/poisson1d.js';
+import { solvePoisson1D, errors1D, energyP1 } from '../../lib/core/elliptic/poisson1d.js';
 import { csrToDense } from '../../lib/core/la/sparse.js';
-import { gaussLegendre } from '../../lib/core/quad/gauss1d.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 
 /** Right-hand sides with exact solutions for −u'' = f on (0,1). */
@@ -43,7 +42,7 @@ function stepsWidget(fig) {
   row.style.marginTop = '.6rem';
   const prev = button(row, { label: '← Back', onClick: () => show(k - 1) });
   const next = button(row, { label: 'Next step →', primary: true, onClick: () => show(k + 1) });
-  const all = button(row, { label: 'Show all', onClick: () => { steps.forEach((s) => s.classList.add('shown')); k = steps.length - 1; upd(); } });
+  button(row, { label: 'Show all', onClick: () => { steps.forEach((s) => s.classList.add('shown')); k = steps.length - 1; upd(); } });
   const counter = h('span', 'readout');
   counter.style.marginLeft = '.5rem';
   row.appendChild(counter);
@@ -57,7 +56,6 @@ function stepsWidget(fig) {
     upd();
   }
   show(0);
-  void all;
 }
 
 /* ------------------------------------------------------------------ */
@@ -71,20 +69,8 @@ function energyWidget(fig) {
   const prob = PROBLEMS.sine;
   const sol = solvePoisson1D('cg', N, prob.f, 0, 0);
   const st = { v: Float64Array.from({ length: N + 1 }, (_, i) => (i === 0 || i === N ? 0 : 0.3 * Math.sin(2 * Math.PI * i / N) + 0.5)), drag: -1 };
-  const G = gaussLegendre(8);
-  /** J(v) = ½∫ v'² − ∫ f v for piecewise-linear v (exact derivative, Gauss for the load) */
-  const J = (v) => {
-    let s = 0;
-    for (let i = 0; i < N; i++) {
-      const a = i * hh, d = (v[i + 1] - v[i]) / hh;
-      s += 0.5 * d * d * hh;
-      for (let q = 0; q < G.x.length; q++) {
-        const t = (G.x[q] + 1) / 2, x = a + t * hh;
-        s -= G.w[q] / 2 * hh * prob.f(x) * (v[i] * (1 - t) + v[i + 1] * t);
-      }
-    }
-    return s;
-  };
+  /** J(v) = ½∫ v'² − ∫ f v for piecewise-linear v (same load quadrature as the Galerkin solver) */
+  const J = (v) => energyP1(v, prob.f);
   const Jmin = J(sol.U);
   const row = buttonRow(L.controls);
   button(row, { label: 'Snap to minimiser', primary: true, onClick: () => { st.v = Float64Array.from(sol.U); draw(); } });
@@ -142,6 +128,9 @@ function galerkinWidget(fig) {
       const c = C[j % 4];
       P.line([(j - 1) * hh, j * hh, (j + 1) * hh], [0, sol.U[j], 0], { color: c, width: 1.3, alpha: 0.85 });
     }
+    // boundary half-tents carry the Dirichlet values (known coefficients, hence dashed)
+    if (sol.U[0] !== 0) P.line([0, hh], [sol.U[0], 0], { color: T.soft, width: 1.3, dash: [4, 3] });
+    if (sol.U[N] !== 0) P.line([1 - hh, 1], [0, sol.U[N]], { color: T.soft, width: 1.3, dash: [4, 3] });
     P.line(xs, ys, { color: T.faint, width: 4 });
     P.line(Array.from({ length: N + 1 }, (_, i) => i * hh), sol.U, { color: T.ink, width: 2 });
     P.points(Array.from({ length: N + 1 }, (_, i) => i * hh), sol.U, { color: T.ink, r: 3 });
@@ -171,12 +160,27 @@ function galerkinWidget(fig) {
 /* ------------------------------------------------------------------ */
 /* W4: one problem, three forms                                         */
 /* ------------------------------------------------------------------ */
+
+/**
+ * Legend as a row of HTML swatches BELOW a canvas (a legend drawn inside these
+ * small plots would hide the curves it explains).
+ * @param {HTMLElement} host element to fill
+ * @param {{label: string, color: string, marker?: boolean}[]} items
+ */
+function htmlLegend(host, items) {
+  host.innerHTML = items.map((it) => `<span style="display:inline-flex;align-items:center;gap:.35em;margin:0 .9em .15em 0;white-space:nowrap">`
+    + `<span style="display:inline-block;width:${it.marker ? '.6em' : '1.3em'};height:${it.marker ? '.6em' : '0'};border-radius:50%;`
+    + `border:${it.marker ? '2px' : '0'} solid ${it.color};border-top:${it.marker ? '2px' : '3px'} solid ${it.color}"></span>${it.label}</span>`).join('');
+}
+
 function formsWidget(fig) {
   const L = widgetLayout(fig);
   const p1 = L.panel('solution $u$');
   const s1 = createCanvas(p1, { aspect: 0.55 });
   const p2 = L.panel('flux $\\sigma = -u\'$');
   const s2 = createCanvas(p2, { aspect: 0.55 });
+  const leg1 = h('div', 'canvas-label'), leg2 = h('div', 'canvas-label');
+  p1.appendChild(leg1); p2.appendChild(leg2);
   const st = { N: 6, prob: 'bump' };
   select(L.controls, { label: 'problem', value: st.prob, options: Object.entries(PROBLEMS).map(([k, v]) => ({ value: k, label: v.label })), onChange: (v) => { st.prob = v; draw(); } });
   slider(L.controls, { label: 'number of cells $N$', min: 2, max: 40, step: 1, value: st.N, onInput: (v) => { st.N = v; draw(); } });
@@ -198,7 +202,8 @@ function formsWidget(fig) {
     P.points(fd.x, fd.U, { color: C[1], r: 4.5, hollow: true });
     const edges = Array.from({ length: N + 1 }, (_, i) => i * hh);
     P.bars(edges, mx.uCell, { color: C[2], alpha: 0.12, width: 2 });
-    P.legend([{ label: 'exact', color: T.faint }, { label: 'FD (strong form): point values', color: C[1], marker: true }, { label: 'CG (weak form): continuous P1', color: C[0] }, { label: 'mixed: piecewise-constant u_h', color: C[2] }], 'tl');
+    htmlLegend(leg1, [{ label: 'exact', color: T.faint }, { label: 'FD (strong form): point values', color: C[1], marker: true },
+      { label: 'CG (weak form): continuous P1', color: C[0] }, { label: 'mixed: piecewise-constant u_h', color: C[2] }]);
     const slo = Math.min(...sg), shi = Math.max(...sg), sp = 0.15 * (shi - slo || 1);
     const Q = new Plot(s2, { xlim: [0, 1], ylim: [slo - sp, shi + sp], xlabel: 'x' });
     Q.frame();
@@ -207,7 +212,7 @@ function formsWidget(fig) {
     for (let i = 0; i < N; i++) fl[i] = -(cg.U[i + 1] - cg.U[i]) / hh;
     Q.bars(edges, fl, { color: C[0], alpha: 0.08, width: 2 });
     Q.line(mx.x, mx.sigma, { color: C[2], width: 2.2 });
-    Q.legend([{ label: 'exact σ = −u′', color: T.faint }, { label: 'CG: −u_h′ (jumps at nodes)', color: C[0] }, { label: 'mixed: σ_h (continuous)', color: C[2] }], 'tr');
+    htmlLegend(leg2, [{ label: 'exact σ = −u′', color: T.faint }, { label: 'CG: −u_h′ (jumps at nodes)', color: C[0] }, { label: 'mixed: σ_h (continuous)', color: C[2] }]);
     // rate table over N = 8..64
     const Ns = [8, 16, 32, 64], hs = Ns.map((n) => 1 / n);
     const rate = (form, key) => fitRate(hs, Ns.map((n) => errors1D(form, solvePoisson1D(form, n, prob.f, prob.u(0), prob.u(1)), prob.u, prob.du)[key]));
@@ -217,7 +222,7 @@ function formsWidget(fig) {
       <tr><td>mixed</td><td>${rate('mixed', 'uL2').toFixed(2)}</td><td>${rate('mixed', 'sigmaL2').toFixed(2)}</td></tr></table>`;
     const eF = errors1D('fd', fd, prob.u, prob.du), eC = errors1D('cg', cg, prob.u, prob.du), eM = errors1D('mixed', mx, prob.u, prob.du);
     out.set(`L² errors at N = ${N}:\n      u          σ\nFD    ${eF.uL2.toExponential(1)}   ${eF.sigmaL2.toExponential(1)}\nCG    ${eC.uL2.toExponential(1)}   ${eC.sigmaL2.toExponential(1)}\nmixed ${eM.uL2.toExponential(1)}   ${eM.sigmaL2.toExponential(1)}\n(observed rates over N = 8…64:)`);
-    selfCheck('forms finite', [eF, eC, eM].every((e) => Number.isFinite(e.uL2)));
+    selfCheck('forms finite', [eF, eC, eM].every((e) => Number.isFinite(e.uL2) && Number.isFinite(e.sigmaL2)));
   }
   s1.onResize(draw); s2.onResize(draw);
   draw();
@@ -229,5 +234,3 @@ initChapter(() => {
   mount('w-galerkin', galerkinWidget);
   mount('w-forms', formsWidget);
 });
-
-export { fmt };

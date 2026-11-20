@@ -17,6 +17,7 @@ import { Plot } from '../../lib/viz/plot1d.js';
 import { Animator } from '../../lib/viz/anim.js';
 import { gaussLegendre } from '../../lib/core/quad/gauss1d.js';
 import { burgers, burgersRiemann } from '../../lib/core/models/scalar.js';
+import { advDiffGaussian, burgersBreakingTime, burgersRiemannKind } from '../../lib/core/verify/closedforms.js';
 import { makeFV1D, cellAverages } from '../../lib/core/fv/fv1d.js';
 import { makeStepper } from '../../lib/core/time/rk.js';
 
@@ -41,8 +42,10 @@ function advDiffWidget(fig) {
   p1.style.flex = p2.style.flex = '1 1 100%';
   const st = { a: 1, k: 0.02, t: 0 };
   const sig = 0.25, x0 = 1;
-  const U = (x, t) => { const s2v = sig * sig + 4 * st.k * t; return sig / Math.sqrt(s2v) * Math.exp(-((x - x0 - st.a * t) ** 2) / s2v); };
-  const Ux = (x, t) => { const s2v = sig * sig + 4 * st.k * t; return -2 * (x - x0 - st.a * t) / s2v * U(x, t); };
+  // exact solution (lib/core/verify/closedforms.js, tested against the PDE)
+  const prm = () => ({ a: st.a, k: st.k, sigma: sig, x0 });
+  const U = (x, t) => advDiffGaussian(x, t, prm()).u;
+  const Ux = (x, t) => advDiffGaussian(x, t, prm()).ux;
   slider(L.controls, { label: 'velocity $a$', min: -1, max: 2, step: 0.05, value: st.a, onInput: (v) => { st.a = v; draw(); } });
   slider(L.controls, { label: 'diffusivity $k$', min: 0, max: 0.1, step: 0.002, value: st.k, onInput: (v) => { st.k = v; draw(); } });
   const tS = slider(L.controls, { label: 'time $t$', min: 0, max: 1.5, step: 0.01, value: 0, onInput: (v) => { st.t = v; draw(); } });
@@ -243,7 +246,7 @@ function burgersWidget(fig) {
   const p2 = L.panel('solution at time $t$');
   const s2 = createCanvas(p2, { aspect: 0.62 });
   const u0 = (x) => 0.25 + 0.5 * Math.sin(2 * Math.PI * x);
-  const tStar = 1 / Math.PI; // breaking time: −1 / min u0' = 1/π
+  const tStar = burgersBreakingTime((x) => Math.PI * Math.cos(2 * Math.PI * x)); // −1 / min u0' = 1/π
   const Tmax = 0.8;
   // reference solution: Godunov + MUSCL(MC) on 800 cells, snapshots every 0.01
   const N = 800, fv = makeFV1D({ model: burgers, N, flux: 'godunov', recon: 'muscl', limiter: 'mc' });
@@ -324,7 +327,7 @@ function riemannWidget(fig) {
     const T = theme(), C = seriesColors(), { uL, uR } = st;
     const P = new Plot(s1, { xlim: [-1.5, 1.5], ylim: [0, 1], xlabel: 'x', ylabel: 't' });
     P.frame();
-    const shock = uL > uR, s = 0.5 * (uL + uR);
+    const { kind, speed: s } = burgersRiemannKind(uL, uR), shock = kind === 'shock';
     // left characteristics end at the shock (or the fan edge)
     for (let k = 0; k < 16; k++) {
       const x0 = -1.5 + k * 0.1;
@@ -339,7 +342,8 @@ function riemannWidget(fig) {
       P.line([x0, x0 + uR * tEnd], [0, tEnd], { color: C[1], width: 1.3 });
     }
     if (shock) P.line([0, s], [0, 1], { color: T.ink, width: 3 });
-    else for (let k = 0; k <= 8; k++) { const v = uL + (uR - uL) * k / 8; P.line([0, v], [0, 1], { color: C[2], width: 1.3 }); }
+    else if (kind === 'rarefaction') for (let k = 0; k <= 8; k++) { const v = uL + (uR - uL) * k / 8; P.line([0, v], [0, 1], { color: C[2], width: 1.3 }); }
+    else P.line([0, uL], [0, 1], { color: C[0], width: 1.3 }); // constant state: just one more characteristic
     const xs = [], ys = [];
     for (let i = 0; i <= 600; i++) { const x = -1.5 + 3 * i / 600; xs.push(x); ys.push(burgersRiemann(uL, uR, x / 1)); }
     const lo = Math.min(uL, uR), hi = Math.max(uL, uR), pad = 0.2 * (hi - lo) + 0.1;
@@ -348,7 +352,10 @@ function riemannWidget(fig) {
     Q.line(xs, ys, { color: shock ? T.ink : C[2], width: 2.4 });
     out.set(shock
       ? `SHOCK (u_L > u_R)\nRankine–Hugoniot speed\ns = [f]/[u] = (u_L+u_R)/2 = ${fmt(s)}`
-      : `RAREFACTION (u_L < u_R)\nfan: u = x/t for ${fmt(uL)} ≤ x/t ≤ ${fmt(uR)}`);
+      : kind === 'rarefaction'
+        ? `RAREFACTION (u_L < u_R)\nfan: u = x/t for ${fmt(uL)} ≤ x/t ≤ ${fmt(uR)}`
+        : `CONSTANT STATE (u_L = u_R)\nno wave: u = ${fmt(uL)} everywhere,\nall characteristics are parallel`);
+    selfCheck('riemann widget finite', ys.every(Number.isFinite));
   }
   s1.onResize(draw); s2.onResize(draw);
   draw();

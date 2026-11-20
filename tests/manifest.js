@@ -34,6 +34,7 @@ export const TEST_FILES = [
   'unit/la.test.js',
   'unit/manifest.test.js',
   'unit/mesh.test.js',
+  'unit/primer.test.js',
   'unit/quad.test.js',
   'unit/rk.test.js',
 ];

@@ -14,8 +14,7 @@ import { drawFunction } from '../../lib/viz/field2d.js';
 import { colorbar } from '../../lib/viz/colormap.js';
 import { drawContours } from '../../lib/viz/contour.js';
 import { Plot } from '../../lib/viz/plot1d.js';
-import { gaussLegendre } from '../../lib/core/quad/gauss1d.js';
-import { triangleRule } from '../../lib/core/quad/simplex.js';
+import { polygonEdgeFluxes, polygonAreaIntegral } from '../../lib/core/verify/divthm.js';
 import { interpError, interpolantAt, interpNodes } from '../../lib/core/verify/interp1d.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 
@@ -138,61 +137,6 @@ const VFIELDS = {
   waves: { label: 'compressions  F = (sin 2x, sin 2y)/2', F: (x, y) => [Math.sin(2 * x) / 2, Math.sin(2 * y) / 2], div: (x, y) => Math.cos(2 * x) + Math.cos(2 * y) },
 };
 
-/**
- * Outward flux ∮ F·n ds of each polygon edge (Gauss quadrature on edges).
- * Works for either orientation: we flip normals for clockwise polygons.
- */
-function edgeFluxes(poly, F) {
-  const n = poly.length, G = gaussLegendre(8), SUB = 8; // 8 sub-segments × 8 Gauss points per edge
-  let area2 = 0;
-  for (let i = 0; i < n; i++) { const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % n]; area2 += ax * by - bx * ay; }
-  const orient = area2 >= 0 ? 1 : -1; // +1 = counter-clockwise
-  const fl = [];
-  for (let i = 0; i < n; i++) {
-    const [ax, ay] = poly[i], [bx, by] = poly[(i + 1) % n];
-    const len = Math.hypot(bx - ax, by - ay);
-    const nx = orient * (by - ay) / len, ny = -orient * (bx - ax) / len; // outward normal
-    let s = 0;
-    for (let k = 0; k < SUB; k++)
-      for (let q = 0; q < G.x.length; q++) {
-        const t = (k + (G.x[q] + 1) / 2) / SUB, [fx, fy] = F(ax + t * (bx - ax), ay + t * (by - ay));
-        s += G.w[q] / 2 / SUB * len * (fx * nx + fy * ny);
-      }
-    fl.push({ flux: s, nx, ny, mx: (ax + bx) / 2, my: (ay + by) / 2 });
-  }
-  return { fl, orient };
-}
-
-/**
- * ∫_P div F dA for a simple polygon P via a signed fan triangulation from
- * vertex 0: triangles with negative orientation subtract. Correct for any
- * simple (also non-convex) polygon.
- */
-function areaIntegral(poly, f) {
-  const R = triangleRule(12), m = 8; // each fan triangle is split into m² sub-triangles
-  let total = 0, area2 = 0;
-  const [ox, oy] = poly[0];
-  for (let i = 1; i + 1 < poly.length; i++) {
-    const [ax, ay] = poly[i], [bx, by] = poly[i + 1];
-    const det = (ax - ox) * (by - oy) - (bx - ox) * (ay - oy); // signed 2×area
-    const P = (s, t) => [ox + (ax - ox) * s + (bx - ox) * t, oy + (ay - oy) * s + (by - oy) * t];
-    let s = 0;
-    // uniform refinement of the reference triangle: "upright" and "flipped" sub-triangles
-    for (let I = 0; I < m; I++) for (let J = 0; I + J < m; J++) {
-      const subs = [[[I, J], [I + 1, J], [I, J + 1]]];
-      if (I + J < m - 1) subs.push([[I + 1, J], [I + 1, J + 1], [I, J + 1]]);
-      for (const [a, b, c] of subs)
-        for (let q = 0; q < R.n; q++) {
-          const sx = (a[0] + (b[0] - a[0]) * R.x[q] + (c[0] - a[0]) * R.y[q]) / m;
-          const sy = (a[1] + (b[1] - a[1]) * R.x[q] + (c[1] - a[1]) * R.y[q]) / m;
-          s += R.w[q] / (m * m) * f(...P(sx, sy));
-        }
-    }
-    total += s * det; area2 += det;
-  }
-  return Math.sign(area2 || 1) * total;
-}
-
 function divThmWidget(fig) {
   const L = widgetLayout(fig);
   const panel = L.panel();
@@ -222,7 +166,7 @@ function divThmWidget(fig) {
     }
     ctx.restore();
     // polygon
-    const { fl } = edgeFluxes(st.poly, V.F);
+    const { fl } = polygonEdgeFluxes(st.poly, V.F); // zero-length edges get flux 0
     ctx.save();
     ctx.fillStyle = 'rgba(255,255,255,0.22)'; ctx.strokeStyle = '#15171c'; ctx.lineWidth = 2;
     ctx.beginPath();
@@ -231,6 +175,7 @@ function divThmWidget(fig) {
     // normals coloured by sign of the flux
     const maxF = Math.max(...fl.map((e) => Math.abs(e.flux)), 1e-9);
     for (const e of fl) {
+      if (e.nx === 0 && e.ny === 0) continue; // degenerate edge (two vertices on top of each other)
       const c = e.flux >= 0 ? T.accent2 : T.accent;
       ctx.strokeStyle = ctx.fillStyle = c; ctx.lineWidth = 2.5;
       const len = 0.15 + 0.45 * Math.abs(e.flux) / maxF;
@@ -242,10 +187,10 @@ function divThmWidget(fig) {
     }
     ctx.restore();
     colorbar(ctx, 'rdbu', surf.w - 64, 10, 12, surf.h - 20, -2, 2, { ink: T.soft });
-    const total = fl.reduce((s, e) => s + e.flux, 0), vol = areaIntegral(st.poly, V.div);
+    const total = fl.reduce((s, e) => s + e.flux, 0), vol = polygonAreaIntegral(st.poly, V.div);
     out.set(fl.map((e, i) => `edge ${i + 1}: ∫F·n ds = ${e.flux >= 0 ? ' ' : ''}${e.flux.toFixed(4)}`).join('\n')
       + `\n<b>Σ edges   = ${total.toFixed(6)}</b>\n<b>∫ div F dA = ${vol.toFixed(6)}</b>`);
-    selfCheck('divergence theorem holds', Math.abs(total - vol) < 1e-6);
+    selfCheck('divergence theorem holds', Number.isFinite(total) && Math.abs(total - vol) < 1e-6);
   }
   onPointer(surf.canvas, {
     down: (x, y) => {
@@ -272,6 +217,11 @@ function divThmWidget(fig) {
 /* Widget 3: convergence explorer                                       */
 /* ------------------------------------------------------------------ */
 
+/** Meshes of the log–log plot; N = 1024 is fine enough for p = 4 to reach round-off. */
+const CONV_NS = [2, 4, 8, 16, 32, 64, 128, 256, 512, 1024];
+/** Errors below this are too close to round-off (≈ 1e-16…1e-15) and are excluded from the slope fit. */
+const ROUNDOFF = 1e-14;
+
 const FUNCS = {
   smooth: { label: 'smooth: sin(2πx) + x²', f: (x) => Math.sin(2 * Math.PI * x) + x * x },
   runge: { label: 'steep but smooth: 1/(1+100(x−½)²)', f: (x) => 1 / (1 + 100 * (x - 0.5) ** 2) },
@@ -294,16 +244,15 @@ function convWidget(fig) {
   let curve = null;
   function update() {
     const f = FUNCS[st.fn].f;
-    const Ns = [2, 4, 8, 16, 32, 64, 128, 256];
-    curve = Ns.map((N) => ({ N, h: 1 / N, e: interpError(f, N, st.p)[st.norm] }));
+    curve = CONV_NS.map((N) => ({ N, h: 1 / N, e: interpError(f, N, st.p)[st.norm] }));
     draw();
   }
   function draw() {
     const T = theme(), C = seriesColors(), f = FUNCS[st.fn].f;
     // top: function + interpolant
-    const xs = [], ys = [], ysI = [];
+    const xs = [], ys = [];
     for (let k = 0; k <= 800; k++) { const x = k / 800; xs.push(x); ys.push(f(x)); }
-    let lo = Math.min(...ys), hi = Math.max(...ys);
+    const lo = Math.min(...ys), hi = Math.max(...ys);
     const pad = 0.15 * (hi - lo || 1);
     const P = new Plot(s1, { xlim: [0, 1], ylim: [lo - pad, hi + pad], xlabel: 'x' });
     P.frame();
@@ -313,7 +262,6 @@ function convWidget(fig) {
       const sx = [], sy = [];
       for (let k = 0; k <= 30; k++) { const x = e * h + h * k / 30 * 0.999999 + (k === 0 ? 1e-9 : 0); sx.push(x); sy.push(interpolantAt(f, st.N, st.p, x)); }
       segs.push([sx, sy]);
-      ysI.push(...sy);
     }
     P.segments(segs, { color: C[0], width: 2 });
     const nodes = interpNodes(st.p), nx = [], ny = [];
@@ -323,7 +271,7 @@ function convWidget(fig) {
     // bottom: log-log
     const es = curve.map((c) => c.e).filter((e) => e > 0);
     const emin = Math.max(1e-16, Math.min(...es)), emax = Math.max(...es);
-    const Q = new Plot(s2, { xlim: [1 / 400, 1], ylim: [10 ** Math.floor(Math.log10(emin)), 10 ** Math.ceil(Math.log10(emax))], xlog: true, ylog: true, xlabel: 'mesh size h', ylabel: `${st.norm === 'L2' ? 'L²' : 'max'} error` });
+    const Q = new Plot(s2, { xlim: [1 / 1500, 1], ylim: [10 ** Math.floor(Math.log10(emin)), 10 ** Math.ceil(Math.log10(emax))], xlog: true, ylog: true, xlabel: 'mesh size h', ylabel: `${st.norm === 'L2' ? 'L²' : 'max'} error` });
     Q.frame();
     Q.line(curve.map((c) => c.h), curve.map((c) => c.e), { color: C[0] });
     Q.points(curve.map((c) => c.h), curve.map((c) => c.e), { color: C[0] });
@@ -333,9 +281,11 @@ function convWidget(fig) {
     const expect = st.norm === 'L2' ? (smooth ? st.p + 1 : st.fn === 'kink' ? Math.min(st.p + 1, 1.5) : 0.5) : (smooth ? st.p + 1 : st.fn === 'kink' ? 1 : 0);
     const k = curve.findIndex((c) => c.N === 16);
     if (expect > 0 && curve[k].e > 1e-14) Q.slopeTriangle(curve[k].h * 0.8, curve[k].e * 0.4, expect, 0.25);
-    const valid = curve.filter((c) => c.e > 1e-13);
+    // fit the slope through the three finest meshes that are still clearly above round-off
+    const valid = curve.filter((c) => c.e > ROUNDOFF), nFloor = curve.length - valid.length;
     const r = valid.length >= 3 ? fitRate(valid.map((c) => c.h), valid.map((c) => c.e), 3) : NaN;
-    out.set(`error at N=${st.N}: ${fmt(cur)}\nobserved slope (last 3 points): ${Number.isFinite(r) ? r.toFixed(2) : 'n/a (round-off)'}\nexpected: ${expect}`);
+    out.set(`error at N=${st.N}: ${fmt(cur)}\nobserved slope (${nFloor ? `N = ${valid.slice(-3).map((c) => c.N).join(', ')}` : 'last 3 points'}): ${Number.isFinite(r) ? r.toFixed(2) : 'n/a'}\nexpected: ${expect}`
+      + (nFloor ? `\n${nFloor} finest mesh${nFloor > 1 ? 'es' : ''} below ${ROUNDOFF.toExponential(0)}: too close to round-off,\nnot used for the slope` : ''));
     selfCheck('convergence errors finite', curve.every((c) => Number.isFinite(c.e)));
   }
   s1.onResize(draw); s2.onResize(draw);

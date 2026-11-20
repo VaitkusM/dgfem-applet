@@ -30,7 +30,7 @@ method in this course.</p>
 <tr><td>$\mathbf a$, $k$</td><td>a velocity field; a diffusivity (heat conductivity) $k \ge 0$</td></tr>
 <tr><td>$\partial_t u$, $u_t$</td><td>partial derivative in time</td></tr>
 <tr><td>$f(u)$, $f'(u)$</td><td>in 1D: scalar flux function and its derivative, the <em>characteristic speed</em></td></tr>
-<tr><td>$u_L, u_R$; $[\,\cdot\,]$</td><td>states left/right of a discontinuity; jump $[q] = q_R - q_L$ (in this chapter)</td></tr>
+<tr><td>$u_L, u_R$; $[\,\cdot\,]$</td><td>states left/right of a discontinuity; jump $[q] = q_R - q_L$ (in this chapter only: from chapter 6 on, jumps across cell faces are written with double brackets, $[\![u]\!] = u^- - u^+$, with the opposite sign)</td></tr>
 </table>
 </div>
 
@@ -86,7 +86,7 @@ an equilibrium in which every point influences every other point. It needs bound
 <figcaption><b>Advection–diffusion in 1D</b> with the exact solution
 $u = \frac{\sigma}{\sqrt{\sigma^2+4kt}}\exp\!\big(-\frac{(x - x_0 - at)^2}{\sigma^2 + 4kt}\big)$.
 The second plot splits the flux into its advective part $a u$ (proportional to $u$) and its diffusive part $-k u_x$
-(positive on the front flank, negative on the back flank: it pushes material outwards). The integral $\int u\,\mathrm dx$ stays
+(positive on the right flank, negative on the left flank: it pushes material outwards, away from the peak). The integral $\int u\,\mathrm dx$ stays
 constant: the PDE conserves mass for any $a$ and $k$.</figcaption>
 </figure>
 
@@ -139,7 +139,7 @@ every cell face where two different values meet <em>is</em> a little Riemann pro
 
 <figure class="widget" id="w-riemann">
 <figcaption><b>Burgers Riemann problem.</b> Choose $u_L$ and $u_R$. With $u_L &gt; u_R$, characteristics collide and end in a shock (thick line) moving with the
-Rankine–Hugoniot speed. With $u_L &lt; u_R$ they spread out and the gap is filled by a rarefaction fan (green). Try $u_L = -0.5$, $u_R = 1$: the fan
+Rankine–Hugoniot speed. With $u_L &lt; u_R$ they spread out and the gap is filled by a rarefaction fan (green). With $u_L = u_R$ there is no wave at all. Try $u_L = -0.5$, $u_R = 1$: the fan
 contains the <em>sonic point</em> $u = 0$ where the characteristic speed changes sign — a notorious trouble spot for numerical fluxes.</figcaption>
 </figure>
 

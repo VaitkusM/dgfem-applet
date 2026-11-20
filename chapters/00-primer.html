@@ -110,7 +110,9 @@ that always agree.</figcaption>
 <div class="box try">
 <span class="box-title">Try this</span>
 <ul>
-<li><b>Vortex:</b> the divergence is zero everywhere, so every polygon has zero net flux — even though individual edges have large fluxes.</li>
+<li><b>Vortex:</b> the divergence is zero everywhere, so every polygon has zero net flux — even though the individual edges do carry flux.
+For the initial polygon the edge fluxes are small (its corners are almost equally far from the centre of rotation); drag one vertex to the origin and
+the two edges meeting there get large fluxes of opposite sign, while the sum stays zero.</li>
 <li><b>Source $\mathbf F = (x,y)/2$:</b> $\nabla\cdot\mathbf F = 1$, so the net flux equals the polygon's <em>area</em>. Drag a vertex and watch both numbers change together.</li>
 <li><b>Localised source:</b> move the polygon away from the origin: the flux drops; make it enclose the origin: positive. Outside the
 ring $r = \sqrt 2$ the divergence is negative — the field slows down, so flux is "absorbed" there.</li>
@@ -153,14 +155,16 @@ on a cell is at most about $\frac{h^{p+1}}{(p+1)!}\max|f^{(p+1)}|$, so we expect
 
 <figure class="widget" id="w-conv">
 <figcaption><b>Convergence explorer.</b> First plot: $f$ and its piecewise interpolant on the current mesh (dots = interpolation nodes).
-Second plot: the error for $N = 2,4,\dots,256$ on log–log axes; the hollow circle is the current mesh. The triangle shows the
+Second plot: the error for $N = 2,4,\dots,1024$ on log–log axes; the hollow circle is the current mesh. The triangle shows the
 expected slope.</figcaption>
 </figure>
 
 <div class="box try">
 <span class="box-title">Try this</span>
 <ul>
-<li>Smooth function: increase $p$ and watch the slope grow as $p+1$. For $p=4$ the curve hits a floor near $10^{-15}$: <b>round-off</b> of double precision.</li>
+<li>Smooth function: increase $p$ and watch the slope grow as $p+1$. For $p=4$ the finest mesh ($N=1024$) no longer follows the straight line: the error has reached
+about $10^{-15}$ in the max norm (a few $10^{-16}$ in $L^2$), the <b>round-off</b> level of double precision (numbers carry about 16 digits), and no further refinement can improve it.
+The read-out leaves errors below $10^{-14}$ out of the slope fit.</li>
 <li>Steep but smooth function: for coarse meshes nothing seems to converge (“pre-asymptotic regime”), then the slope kicks in once $h$ resolves the feature.</li>
 <li><b>Kink</b> $|x-\tfrac13|$: no matter how large $p$ is, the $L^2$ slope stays at $1.5$ (max norm: $1$). Only the one cell containing the kink is badly
 approximated; its error is $O(h)$ on a set of width $h$. <b>Smoothness, not polynomial degree, limits the rate.</b></li>

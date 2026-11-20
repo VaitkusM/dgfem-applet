@@ -1,6 +1,6 @@
 import { test, assert, assertClose } from '../harness.js';
-import { legendreP, legendreAll, radauRight, jacobiP, jacobiDP } from '../../lib/core/basis/legendre.js';
-import { lagrangeValues, lagrangeDerivs, diffMatrix } from '../../lib/core/basis/lagrange.js';
+import { legendreP, legendreAll, legendreDP, radauRight, jacobiP, jacobiDP } from '../../lib/core/basis/legendre.js';
+import { lagrangeValues, lagrangeDerivs, diffMatrix, baryWeights, interpMatrix, equispaced } from '../../lib/core/basis/lagrange.js';
 import { p1Basis, p2Basis, P2_NODES, dubinerBasis, dimP } from '../../lib/core/basis/simplex.js';
 import { gaussLegendre, gaussLobatto } from '../../lib/core/quad/gauss1d.js';
 import { triangleRule } from '../../lib/core/quad/simplex.js';
@@ -118,4 +118,41 @@ test('Dubiner basis is L2-orthonormal on the reference triangle; gradients OK', 
   assertClose(dubinerBasis(3, 0.2, 0.2).v[0], Math.SQRT2, 1e-14);
   // nested: first dimP(q) modes have degree ≤ q -> check mode count by degree is fine
   assert(dimP(3) === 10);
+});
+
+test('legendreDP, endpoint derivatives P_n\'(±1) = (±1)^{n+1} n(n+1)/2, Bonnet recurrence', () => {
+  for (let n = 0; n <= 8; n++) {
+    assertClose(legendreDP(n, 1), n * (n + 1) / 2, 1e-12);
+    assertClose(legendreDP(n, -1), (n % 2 ? 1 : -1) * n * (n + 1) / 2, 1e-12);
+    assertClose(legendreDP(n, 0.4), legendreAll(n, 0.4).dP[n], 0);
+    if (n >= 1) { const x = -0.37; assertClose((n + 1) * legendreP(n + 1, x), (2 * n + 1) * x * legendreP(n, x) - n * legendreP(n - 1, x), 1e-14); }
+  }
+});
+
+test('Jacobi polynomials with half-integer parameters (Γ(1/2) branch) and unsupported parameters', () => {
+  // α = β = 1/2: weight √(1−x²); the orthonormal polynomials are √(2/π) U_n (Chebyshev, 2nd kind),
+  // U_n(cos θ) = sin((n+1)θ)/sin θ
+  for (const x of [-0.8, 0.1, 0.6]) {
+    const th = Math.acos(x);
+    for (let n = 0; n <= 5; n++) assertClose(jacobiP(x, 0.5, 0.5, n), Math.sqrt(2 / Math.PI) * Math.sin((n + 1) * th) / Math.sin(th), 1e-12, 0, `n=${n}`);
+  }
+  let threw = false;
+  try { jacobiP(0.2, 0.3, 0, 2); } catch { threw = true; }
+  assert(threw, 'non-(half-)integer parameters must be rejected, not silently wrong');
+});
+
+test('barycentric weights, interpolation matrix, equispaced nodes', () => {
+  const x = equispaced(3);
+  assertClose(x[0], -1); assertClose(x[1], -1 / 3, 1e-15); assertClose(x[3], 1);
+  assert(equispaced(0).length === 1 && equispaced(0)[0] === 0);
+  // λ_j = 1/Π(x_j − x_m); for nodes −1, 0, 1: 1/2, −1, 1/2
+  const w = baryWeights([-1, 0, 1]);
+  assertClose(w[0], 0.5); assertClose(w[1], -1); assertClose(w[2], 0.5);
+  // interpolation matrix reproduces a cubic at arbitrary points
+  const f = (t) => 2 * t ** 3 - t + 0.5, pts = [-0.9, -0.2, 0.33, 1], I = interpMatrix(x, pts);
+  for (let q = 0; q < pts.length; q++) {
+    let s = 0;
+    for (let j = 0; j < 4; j++) s += I[q * 4 + j] * f(x[j]);
+    assertClose(s, f(pts[q]), 1e-13);
+  }
 });

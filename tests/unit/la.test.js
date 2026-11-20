@@ -1,6 +1,6 @@
 import { test, assert, assertClose, assertArrayClose } from '../harness.js';
-import { luFactor, luSolve, inverse, matMul, eye, cholesky, symEig, eigGeneral, det } from '../../lib/core/la/dense.js';
-import { SparseBuilder, csrMatVec, csrToDense, csrTranspose, csrSymmetryError, csrPermute, csrBandwidth, csrExtract } from '../../lib/core/la/sparse.js';
+import { luFactor, luSolve, inverse, matMul, matVec, transpose, solve, eye, cholesky, symEig, eigGeneral, det } from '../../lib/core/la/dense.js';
+import { SparseBuilder, csrMatVec, csrToDense, csrTranspose, csrSymmetryError, csrPermute, csrBandwidth, csrExtract, csrAdd, csrGet, csrDiag, denseToCsr, nnz } from '../../lib/core/la/sparse.js';
 import { rcm, sparseLU, sparseSolve } from '../../lib/core/la/direct.js';
 import { cg, gmres, jacobiPrecond } from '../../lib/core/la/krylov.js';
 import { conditionEstimate } from '../../lib/core/la/eig.js';
@@ -152,4 +152,63 @@ test('condition estimate of 2D Laplacian', () => {
   const c = conditionEstimate(A);
   assertClose(c.lmin, lmin, 0, 1e-8); assertClose(c.lmax, lmax, 0, 1e-8);
   assertClose(c.kappa, lmax / lmin, 0, 1e-7);
+});
+
+test('small dense helpers: matVec, transpose, solve; singular matrices are flagged', () => {
+  const A = Float64Array.of(1, 2, 3, 4, 5, 6); // 2×3
+  assertArrayClose(matVec(A, 2, 3, [1, 0, -1]), Float64Array.of(-2, -2));
+  assertArrayClose(transpose(A, 2, 3), Float64Array.of(1, 4, 2, 5, 3, 6));
+  assertArrayClose(solve(Float64Array.of(0, 2, 1, 1), 2, [4, 3]), Float64Array.of(1, 2), 1e-14); // needs the row swap
+  assert(luFactor(Float64Array.of(1, 2, 2, 4), 2).singular === true);
+  assert(luFactor(Float64Array.of(1, 2, 2, 5), 2).singular === false);
+});
+
+test('small CSR helpers: get, diag, add, dense round trip, nnz, bandwidth', () => {
+  const D = Float64Array.of(2, 0, 1, 0, 3, 0, -1, 0, 0), A = denseToCsr(D, 3);
+  assert(nnz(A) === 4);
+  assertArrayClose(csrToDense(A), D);
+  assert(csrGet(A, 0, 2) === 1 && csrGet(A, 1, 0) === 0);
+  assertArrayClose(csrDiag(A), Float64Array.of(2, 3, 0));
+  assertArrayClose(csrToDense(csrAdd(A, csrTranspose(A), 2, -1)), Float64Array.of(2, 0, 3, 0, 3, 0, -3, 0, 0));
+  const bw = csrBandwidth(A);
+  assert(bw.kl === 2 && bw.ku === 2);
+  assertClose(csrSymmetryError(A), 2 / 3, 1e-15); // entries 1 and −1 differ by 2, max |A_ij| = 3
+});
+
+test('banded LU: random non-symmetric systems with weak diagonals agree with dense LU (with and without RCM)', () => {
+  const r = rng(5);
+  let checked = 0;
+  for (let rep = 0; rep < 120; rep++) {
+    const n = 5 + Math.floor((r() + 0.5) * 30), B = new SparseBuilder(n);
+    for (let i = 0; i < n; i++) {
+      for (let c = 0; c < 3; c++) B.add(i, Math.floor((r() + 0.5) * n), r());
+      if (r() > 0) B.add(i, i, r() * 0.01); // tiny or missing diagonal ⇒ pivoting is essential
+      B.add(i, (i + 1) % n, 1 + r());
+    }
+    const A = B.toCSR(), x = Float64Array.from({ length: n }, () => r()), b = csrMatVec(A, x);
+    const xd = solve(csrToDense(A), n, b);
+    let ed = 0;
+    for (let i = 0; i < n; i++) ed = Math.max(ed, Math.abs(xd[i] - x[i]));
+    if (ed > 1e-8) continue; // too ill-conditioned to be a fair comparison
+    checked++;
+    for (const reorder of [true, false]) assertArrayClose(sparseLU(A, { reorder }).solve(b), x, 1e-7, 0, `rep ${rep} reorder=${reorder}`);
+  }
+  assert(checked > 80, `only ${checked} systems were well conditioned`);
+});
+
+test('general eigenvalues: degenerate cases (zero, Jordan block, rotation, cyclic shift, 1×1)', () => {
+  let e = eigGeneral(new Float64Array(9), 3);
+  assertArrayClose(e.re, new Float64Array(3)); assertArrayClose(e.im, new Float64Array(3));
+  e = eigGeneral(Float64Array.of(2, 1, 0, 0, 2, 1, 0, 0, 2), 3);
+  assertArrayClose(e.re, Float64Array.of(2, 2, 2), 1e-12); assertArrayClose(e.im, new Float64Array(3), 1e-12);
+  e = eigGeneral(Float64Array.of(0, -1, 1, 0), 2);
+  assertArrayClose(e.re, Float64Array.of(0, 0), 1e-14); assertClose(Math.abs(e.im[0]), 1, 1e-14); assertClose(e.im[0] + e.im[1], 0, 1e-14);
+  e = eigGeneral(Float64Array.of(7), 1);
+  assert(e.re[0] === 7 && e.im[0] === 0);
+  // cyclic shift of size 20: eigenvalues are the 20th roots of unity (needs the exceptional shifts)
+  const n = 20, C = new Float64Array(n * n);
+  for (let i = 0; i < n; i++) C[i * n + (i + 1) % n] = 1;
+  e = eigGeneral(C, n);
+  const ang = Array.from(e.re, (v, i) => { assertClose(Math.hypot(v, e.im[i]), 1, 1e-12); return Math.atan2(e.im[i], v); }).sort((a, b) => a - b);
+  for (let i = 1; i < n; i++) assertClose(ang[i] - ang[i - 1], 2 * Math.PI / n, 1e-10);
 });

@@ -26,7 +26,7 @@ finite volumes or discontinuous Galerkin.</p>
 <span class="box-title">Notation for this chapter</span>
 <table class="notation-table">
 <tr><td>$\Gamma_D$, $\Gamma_N$</td><td>parts of the boundary $\partial\Omega$ with <span class="term" data-g="dirichlet">Dirichlet</span> ($u$ given) and <span class="term" data-g="neumann">Neumann</span> (normal flux given) conditions</td></tr>
-<tr><td>$g$, $g_N$</td><td>Dirichlet data ($u = g$ on $\Gamma_D$) and Neumann data ($\partial_n u = \nabla u\cdot\mathbf n = g_N$ on $\Gamma_N$)</td></tr>
+<tr><td>$g$, $g_N$</td><td>Dirichlet data ($u = g$ on $\Gamma_D$) and Neumann data ($\partial_n u = \nabla u\cdot\mathbf n = g_N$ on $\Gamma_N$; since heat flows down the gradient, $g_N$ is the heat flowing <em>into</em> the domain per unit length of boundary: $g_N = -\boldsymbol\sigma\cdot\mathbf n$)</td></tr>
 <tr><td>$v$</td><td>a <span class="term" data-g="testfn">test function</span></td></tr>
 <tr><td>$a(u,v)$, $\ell(v)$</td><td>bilinear form $\int_\Omega\nabla u\cdot\nabla v\dd\mathbf x$ and linear form $\int_\Omega f v\dd\mathbf x + \int_{\Gamma_N} g_N v\dd s$</td></tr>
 <tr><td>$H^1(\Omega)$</td><td>functions with finite "energy" $\int (u^2 + |\nabla u|^2) < \infty$ — continuous kinks allowed, jumps not</td></tr>
@@ -82,8 +82,8 @@ jumps are not (their derivative would contain a Dirac spike with infinite energy
 <h3>Weak form = energy minimisation</h3>
 <p>For our symmetric, positive problem the weak form is equivalent to a minimisation principle (the <b>Dirichlet principle</b>):
 $u$ minimises the energy</p>
-$$J(v) = \frac12\int_\Omega |\nabla v|^2 \dd\mathbf x - \int_\Omega f\,v\dd\mathbf x$$
-<p>over all $v$ with the right boundary values. (Setting the derivative of $J(u + \varepsilon w)$ with respect to $\varepsilon$ to zero at $\varepsilon=0$
+$$J(v) = \frac12\int_\Omega |\nabla v|^2 \dd\mathbf x - \int_\Omega f\,v\dd\mathbf x - \int_{\Gamma_N} g_N\,v\dd s \;=\; \tfrac12 a(v,v) - \ell(v)$$
+<p>over all $v$ with the right boundary values on $\Gamma_D$. (Setting the derivative of $J(u + \varepsilon w)$ with respect to $\varepsilon$ to zero at $\varepsilon=0$
 gives exactly $a(u,w) = \ell(w)$.) Physically: a membrane under a load $f$ settles into the shape of least energy.</p>
 <div class="box analogy">
 <span class="box-title">Graphics analogy</span>
@@ -114,7 +114,7 @@ The error of the method is the error of the best possible fit — approximation 
 </ul>
 
 <figure class="widget" id="w-galerkin">
-<figcaption><b>1D Galerkin with hat functions</b> for $-u'' = f$. Left: each coloured tent is $U_j\varphi_j$; their sum is the black polyline $u_h$, the grey curve is the
+<figcaption><b>1D Galerkin with hat functions</b> for $-u'' = f$. Left: each coloured tent is $U_j\varphi_j$ (dashed grey half-tents at the two ends carry non-zero Dirichlet values); their sum is the black polyline $u_h$, the grey curve is the
 exact solution. Right: the tridiagonal matrix ($hA$ has entries 2 and −1). Notice the read-out: in 1D the nodal values of $u_h$ are <em>exact</em>
 (to round-off) — a special property of this 1D problem (the Green's function is piecewise linear). It is also a warning from chapter 0: measuring
 errors only at nodes can be misleading — the $L^2$ error is only second order.</figcaption>
@@ -142,8 +142,9 @@ must be continuous across cell faces (the space $H(\mathrm{div})$).</li>
 <li>Choosing $v$ = indicator function of one cell in the second equation gives $\int_{\partial K}\boldsymbol\sigma_h\cdot\mathbf n = \int_K f$: the discrete flux balances the
 source <b>exactly in every cell</b>, just like a finite volume method (chapter 5).</li>
 </ul>
-<p>The price: the linear system has the block form $\begin{pmatrix} M & B^T\\ B & 0\end{pmatrix}$ — a <span class="term" data-g="saddle">saddle-point problem</span>,
-symmetric but <em>indefinite</em>, and the two discrete spaces must be compatible (the <span class="term" data-g="infsup">inf–sup condition</span>). Chapter 9 makes
+<p>The price: after multiplying the second equation by $-1$ (so that both off-diagonal blocks come from the same term $-\int u\,\nabla\cdot\boldsymbol\tau$),
+the linear system has the block form $\begin{pmatrix} M & B^T\\ B & 0\end{pmatrix}$ — a <span class="term" data-g="saddle">saddle-point problem</span>,
+symmetric but <em>indefinite</em> (it has as many negative eigenvalues as there are $u$-unknowns), and the two discrete spaces must be compatible (the <span class="term" data-g="infsup">inf–sup condition</span>). Chapter 9 makes
 this practical with Raviart–Thomas elements and hybridization.</p>
 
 <h2 id="fluxform">The flux form and cell-wise integration: FV and DG</h2>
@@ -169,8 +170,11 @@ cell averages).</figcaption>
 <div class="box try">
 <span class="box-title">Try this</span>
 <ul>
-<li>"Heat source near x = 0.3", $N = 4$: the FD points are close to the exact curve, CG nodes are exact, the mixed bars approximate cell averages.</li>
-<li>Compare the flux plots at $N = 6$: the mixed flux follows the exact flux closely; the CG flux is a staircase.</li>
+<li>"Heat source near x = 0.3", $N = 4$: the CG nodes are exact, the mixed bars approximate cell averages — but the FD points are far off (two are even negative):
+finite differences only <em>sample</em> $f$ at the three interior nodes and miss most of the narrow source, whereas the weak and mixed forms <em>integrate</em> $f$.
+By $N = 16$ the FD points have caught up (within $0.006$ of the exact curve, whose maximum is $0.22$).</li>
+<li>Compare the flux plots at $N = 16$: the mixed flux follows the exact flux closely (its $L^2$ error is about four times smaller than that of the CG flux); the CG flux is a staircase.
+At $N = 6$ the mesh is still too coarse for the narrow heat source and both fluxes are equally poor — convergence orders are statements about small $h$.</li>
 <li>In the energy widget, drag a node far away: the energy grows quadratically — the minimum is unique because $a(v,v) > 0$.</li>
 </ul>
 </div>
