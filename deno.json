@@ -1,6 +1,9 @@
 {
   "tasks": {
     "test": "deno test --allow-read tests/",
+    "lint": "deno lint",
+    "smoke": "bash tools/smoke.sh",
+    "smoke:gpu": "bash tools/smoke.sh --gpu",
     "serve": "python3 -m http.server 8000"
   },
   "lint": { "rules": { "exclude": ["no-unused-vars"] } }

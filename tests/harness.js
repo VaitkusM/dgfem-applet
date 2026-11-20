@@ -6,6 +6,12 @@
  *  - `{browserOnly: true}` marks tests needing DOM/WebGPU (ignored under Deno);
  *    `{denoOnly: true}` marks tests needing Deno APIs (skipped in the browser).
  *
+ *  - A test that cannot run in the current environment (e.g. no WebGPU adapter) must call
+ *    `skip(reason)` instead of returning early: the browser runners then count it as
+ *    SKIPPED, not as passed (Deno has no dynamic skip: there the reason is printed as a warning).
+ *  - Runners (tests/runner.js, the appendix page, tests/gpu/gpu-tests.html) execute a registered
+ *    test with `runTest(t)`, which classifies the outcome as 'pass' | 'fail' | 'skip'.
+ *
  * Test files are named  *.test.js  and must be listed in tests/manifest.js
  * (a Deno test checks that the manifest is complete).
  */
@@ -22,13 +28,47 @@ const isDeno = typeof globalThis.Deno !== 'undefined' && typeof globalThis.Deno.
  * @param {{browserOnly?: boolean, denoOnly?: boolean}} [opts]
  */
 export function test(name, fn, opts = {}) {
-  if (isDeno) globalThis.Deno.test({ name, fn, ignore: !!opts.browserOnly, sanitizeOps: false, sanitizeResources: false });
-  else if (!opts.denoOnly) registry.push({ name, fn, opts });
+  if (isDeno) {
+    const wrapped = async () => {
+      try { await fn(); } catch (e) {
+        if (!(e instanceof SkipSignal)) throw e;
+        console.warn(`SKIPPED ${name}: ${e.message}`);
+      }
+    };
+    globalThis.Deno.test({ name, fn: wrapped, ignore: !!opts.browserOnly, sanitizeOps: false, sanitizeResources: false });
+  } else if (!opts.denoOnly) registry.push({ name, fn, opts });
+}
+
+/** Thrown by skip(); runners report the test as skipped rather than passed or failed. */
+export class SkipSignal extends Error {}
+
+/**
+ * Abort the running test and mark it as SKIPPED (not passed), e.g. when WebGPU is unavailable.
+ * @param {string} reason shown in the test report
+ * @returns {never}
+ */
+export function skip(reason) {
+  throw new SkipSignal(reason);
+}
+
+/**
+ * Run one registered test and classify the outcome.
+ * @param {{name: string, fn: () => (void|Promise<void>)}} t an entry of `registry`
+ * @returns {Promise<{status: 'pass'|'fail'|'skip', msg: string, ms: number}>} msg: failure message or skip reason
+ */
+export async function runTest(t) {
+  const t0 = performance.now();
+  let status = 'pass', msg = '';
+  try { await t.fn(); } catch (e) {
+    status = e instanceof SkipSignal ? 'skip' : 'fail';
+    msg = e && e.message ? e.message : String(e);
+  }
+  return { status, msg, ms: performance.now() - t0 };
 }
 
 export class AssertionError extends Error {}
 
-/** Assert a condition. */
+/** Assert a condition. @param {unknown} cond @param {string} [msg] */
 export function assert(cond, msg = 'assertion failed') {
   if (!cond) throw new AssertionError(msg);
 }

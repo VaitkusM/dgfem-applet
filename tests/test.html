@@ -4,18 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Test suite — Fluxes, DG &amp; friends</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232c5fb3'/%3E%3Cpath d='M5 22 L15 12 M17 20 L27 8' stroke='%23fff' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../css/style.css">
 <style>
   main { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; font-family: var(--font-ui); }
-  td.name { text-align: left; } td.ok { color: var(--accent-3); font-weight: 700; } td.fail { color: var(--accent-2); font-weight: 700; }
+  td.name { text-align: left; } td.ok { color: var(--accent-3); font-weight: 700; } td.fail { color: var(--accent-2); font-weight: 700; } td.skip, .status-skip { color: var(--accent-4); font-weight: 700; }
   td.msg { font: 12px var(--font-mono); white-space: pre-wrap; text-align: left; color: var(--accent-2); }
 </style>
 </head>
 <body>
 <main>
   <h1>Test suite</h1>
-  <p>Runs every test file listed in <code>tests/manifest.js</code> in this browser (including GPU tests when WebGPU is available).
-    Filter with <code>?grep=word</code>. The same tests run headless with <code>deno task test</code>.</p>
+  <p>Runs every test file listed in <code>tests/manifest.js</code> in this browser. The GPU tests need WebGPU; without it they are
+    reported as <b>SKIPPED</b> (not as passed). Filter with <code>?grep=word</code>. The same tests (except the browser-only ones) run headless with <code>deno task test</code>.</p>
   <p id="status">Running…</p>
   <table class="data" id="results"><thead><tr><th>test</th><th>result</th><th>ms</th><th>message</th></tr></thead><tbody></tbody></table>
   <pre id="summary" hidden></pre>

@@ -9,22 +9,32 @@ GitHub Pages serves the repository root as-is: <https://vaitkusm.github.io/dgfem
 2. **`lib/core/` never touches the DOM.** It must run unchanged under Deno (tests) and in the browser.
 3. **Every numerical claim made in the prose is backed by a test** in `tests/`
    (exactness, invariants, or convergence rates against manufactured solutions).
-4. **Lowercase file names only** (GitHub Pages is case-sensitive, macOS is not).
+4. **Lowercase file names only** for everything the site loads (GitHub Pages is case-sensitive, macOS is not);
+   the conventional upper-case repository files (`README.md`, `AGENTS.md`, `LICENSE*`) are the only exceptions.
 5. **JSDoc on every exported function**, stating array layouts and sign conventions.
 6. Typed arrays (`Float64Array`, `Int32Array`) for all numerical data; no per-DOF objects.
 
 ## Layout
 ```
-index.html                   landing page (cards generated from lib/ui/chapters.js)
+index.html                   landing page (cards generated from lib/ui/chapters.js by lib/ui/landing.js)
 chapters/NN-name.html        one page per chapter: prose + <figure class="widget" id="w-…">
-chapters/js/chNN.js          widget wiring for that chapter (imports lib/…)
-css/style.css                all styling; colours are CSS variables (dark mode aware)
+chapters/a-verification.html appendix: verification (runs the test suite in the browser) + glossary
+chapters/js/chNN.js          widget wiring for that chapter (imports lib/…); cha.js for the appendix
+css/style.css                all styling; colours are CSS variables (dark mode aware, WCAG AA contrast)
 lib/core/                    numerics (pure functions, DOM-free)
   basis/  quad/  la/  mesh/  time/  models/  fv/  dg/  fr/  elliptic/  immersed/  dd/  verify/
-lib/viz/                     canvas drawing: plots, colormaps, field rasteriser, meshes, spy plots, animation
-lib/ui/                      page shell (nav, KaTeX, glossary pop-ups, self-test), controls, chapter list, glossary
-lib/gpu/                     WebGPU device setup, WGSL kernels, GPU solvers
-tests/                       *.test.js (listed in tests/manifest.js), harness.js, test.html + runner.js
+lib/viz/                     canvas drawing: canvas.js (HiDPI surfaces, theme(), View2D, pointer + keyboard input),
+                             plots, colormaps, field rasteriser, meshes, spy plots, contours, animation
+lib/ui/                      chapter.js (page shell: nav, KaTeX, glossary pop-ups, self-test), controls.js,
+                             chapters.js (chapter list), glossary.js, landing.js (landing page)
+lib/gpu/                     chapter 12. DOM-free and tested under Deno: cputwin.js (f64 reference solver),
+                             cost.js (FLOP/byte + SIMT models), races.js (race/colouring models), kernels.js (WGSL
+                             sources, uniform layout). Browser/WebGPU only: device.js (device setup, loss handling),
+                             dgadvgpu.js (GPU solver; its host logic is unit-tested with a mock device)
+tests/                       unit/ conv/ gpu/ *.test.js (listed in tests/manifest.js), harness.js, test.html + runner.js,
+                             gpu/gpu-tests.html (GPU tests only)
+tools/                       smoke.sh (headless-Chrome smoke test), gpu-smoke.js (its --gpu mode)
+.github/workflows/test.yml   CI: deno test, deno lint, smoke test
 ```
 
 ## Conventions (sign conventions are a classic source of bugs — use these everywhere)
@@ -53,10 +63,41 @@ tests/                       *.test.js (listed in tests/manifest.js), harness.js
    ```
 4. Widgets are factories `(figureElement) => handle`. Use `widgetLayout`, controls from `lib/ui/controls.js`,
    and surfaces from `lib/viz/canvas.js`. Call `selfCheck(label, ok)` for sanity checks (e.g. no NaN).
-5. Put numerics in `lib/core/…` with tests in `tests/…` and register the test file in `tests/manifest.js`.
+5. Put numerics in `lib/core/…` (chapter-12 models: `lib/gpu/`, see Layout) with tests in `tests/…` and register the test file
+   in `tests/manifest.js`. Models behind a widget's read-out belong there too, not in the chapter script.
+6. Add the favicon line to the `<head>` (copy it from an existing chapter) and, once the widgets exist, `data-min-checks`
+   to `<body>`; check the page at 400 px width (no horizontal page scroll) and in dark mode.
+
+## Shared UI helpers worth knowing
+- `createCanvas(parent, {aspect, label?, description?})` gives the canvas `role="img"`, an accessible name (the panel's
+  `.canvas-label`, or `label`) and repaints on resize **and** on a light/dark switch — register your draw function with
+  `surface.onResize(draw)` and read colours from `theme()` at draw time. Text drawn on an accent-coloured fill uses `theme().onAccent`.
+- `onPointer(canvas, {down, move, up, hover, handles?})` is the only place that sets `touch-action: none` (plain canvases
+  let a swipe scroll the page) and adds a keyboard alternative for free: arrow keys move a virtual pointer, Space/Enter
+  presses/releases it, and your callbacks are called exactly as for a mouse. Return the grabbable points (CSS px) from the
+  optional `handles()` so that keyboard users can jump to them with N / P.
+- `playControls(parent, animator, onReset)` (lib/ui/controls.js) is the standard Play/Pause + Reset row.
+- `segmented`, `slider`, `select` set the ARIA attributes themselves; pass a meaningful `label`.
 
 ## Testing
-- `deno task test` — the full numerical suite, headless (also run by GitHub Actions on every push).
-- `python3 -m http.server 8000` then open <http://localhost:8000/tests/test.html> — same suite in the browser (+ GPU tests).
-- Chapter smoke test: open any chapter with `?selftest=1`; after ~2 s it appends `<pre id="selftest-result">` JSON
-  (`ok`, `errors`, `failedChecks`). `tools/smoke.sh` runs this for every page with headless Chrome.
+- `deno task test` — the full numerical suite, headless (GitHub Actions, job `deno`). Tests marked `{browserOnly: true}`
+  (WebGPU, DOM) are ignored there.
+- `deno task lint` — `deno lint` over the repository (job `lint`); it is the only automatic check that parses the chapter scripts
+  without a browser, so keep it clean.
+- `tools/smoke.sh [base-url]` (job `smoke`) — headless Chrome: `index.html` and every `chapters/*.html` with `?selftest=1`
+  must report `"ok":true`, and `tests/test.html` (the same suite in the browser, plus the browser-only tests) must have
+  `"failed":0`. `CHROME` selects the browser (autodetected), `CHROME_FLAGS` adds flags (CI: `--no-sandbox`).
+- `tools/smoke.sh --gpu` — local only, needs a real GPU and Deno: runs the WebGPU tests and chapter 12 with WebGPU enabled
+  (real time, driven over the DevTools protocol by `tools/gpu-smoke.js`) and **fails if a GPU test is skipped**; it also
+  exercises device loss and recovery of the live widget. Run it whenever `lib/gpu/` or `chapters/js/ch12.js` changes.
+- `python3 -m http.server 8000` then <http://localhost:8000/tests/test.html> — the suite in your own browser.
+- **Skipping.** A test that cannot run in the current environment calls `skip(reason)` from `tests/harness.js`; runners count
+  it as *skipped* (`{passed, failed, skipped, failures, skippedTests}`), never as passed. Do not `return` early instead.
+- **Self-test protocol.** A page opened with `?selftest=1` appends `<pre id="selftest-result">` JSON about 1.5 s after
+  initialisation: `ok`, `katex`, `errors`, `failedChecks`, `nChecks` (distinct `selfCheck` labels), `widgetsWithoutChecks`
+  (informational). `ok` is true only if there are no errors (exceptions, rejections, widget failures reported with
+  `reportError`, unknown glossary keys, sub-resources that failed to load), no failed checks, **and KaTeX rendered the math**.
+  Errors arriving later update the verdict in place. `selfCheck(label, ok)` is keyed by label (calling it every frame is
+  fine; one failure is sticky). Declare how many checks a page must record with `<body data-min-checks="N">` so that
+  checks that silently never ran turn the page red. Anything a widget catches itself must be passed to `reportError`,
+  otherwise the self-test cannot see it.

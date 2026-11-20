@@ -10,8 +10,8 @@
  * Static content filled by script: the generated WGSL volume kernel (#wgsl-volume) and the
  * sum-factorisation cost table (#sumfact-table).
  */
-import { initChapter, mount, selfCheck } from '../../lib/ui/chapter.js';
-import { widgetLayout, slider, select, segmented, button, buttonRow, readout, fmt, h } from '../../lib/ui/controls.js';
+import { initChapter, mount, selfCheck, reportError } from '../../lib/ui/chapter.js';
+import { widgetLayout, slider, select, segmented, button, buttonRow, readout, fmt, h, playControls } from '../../lib/ui/controls.js';
 import { createCanvas, View2D, theme, seriesColors } from '../../lib/viz/canvas.js';
 import { drawQuadField } from '../../lib/viz/field2d.js';
 import { colorbar } from '../../lib/viz/colormap.js';
@@ -22,19 +22,10 @@ import { baryWeights } from '../../lib/core/basis/lagrange.js';
 import { quadGrid } from '../../lib/core/mesh/structured.js';
 import { makeDGAdv2D, makeCpuSolver, INITIAL } from '../../lib/gpu/cputwin.js';
 import { makeKernelSources } from '../../lib/gpu/kernels.js';
-import { kernelCosts, stageTotals, derivativeFlops, roofline, transactions, warpAddresses } from '../../lib/gpu/cost.js';
+import { kernelCosts, stageTotals, derivativeFlops, roofline, ridgePoint, transactions, warpAddresses, simtStats, liftProgram } from '../../lib/gpu/cost.js';
 import { lockstepScatter, colorElements, isValidColoring, gridFaces, faceBufferGather } from '../../lib/gpu/races.js';
 import { getGPU } from '../../lib/gpu/device.js';
 import { createGpuSolver, maxAbsDiff } from '../../lib/gpu/dgadvgpu.js';
-
-/** Play/pause + reset buttons wired to an Animator. */
-function playControls(parent, anim, onReset) {
-  const row = buttonRow(parent);
-  const play = button(row, { label: '▶ Play', primary: true, onClick: () => anim.toggle() });
-  button(row, { label: '↺ Reset', onClick: onReset });
-  anim.o.onState = (r) => play.setLabel(r ? '❚❚ Pause' : '▶ Play');
-  return play;
-}
 
 /** Categorical colours for workgroups / colour classes (readable in light and dark mode). */
 const CAT = ['#4e79a7', '#f28e2b', '#59a14f', '#e15759', '#b07aa1', '#76b7b2', '#edc948', '#ff9da7', '#9c755f'];
@@ -46,6 +37,22 @@ function shade(hex, f) {
   return `rgb(${c.map((v) => Math.round(v * (1 - a) + t * a)).join(',')})`;
 }
 
+/** Parse '#rrggbb' or 'rgb(r,g,b)' into [r, g, b] (0..255). */
+function rgbOf(c) {
+  if (c[0] === '#') return [1, 3, 5].map((k) => parseInt(c.slice(k, k + 2), 16));
+  return c.match(/\d+(\.\d+)?/g).slice(0, 3).map(Number);
+}
+
+/**
+ * Black or white, whichever has the higher WCAG contrast on the background colour `c`
+ * (optionally `c` drawn with opacity `alpha` over `under`).
+ */
+function textOn(c, alpha = 1, under = '#000000') {
+  const a = rgbOf(c), b = rgbOf(under);
+  const L = a.map((v, k) => { const x = (alpha * v + (1 - alpha) * b[k]) / 255; return x <= 0.03928 ? x / 12.92 : ((x + 0.055) / 1.055) ** 2.4; });
+  return 0.2126 * L[0] + 0.7152 * L[1] + 0.0722 * L[2] > 0.179 ? '#111' : '#fff';
+}
+
 /* ------------------------------------------------------------------ */
 /* W1: thread mapping, warps, divergence                                */
 /* ------------------------------------------------------------------ */
@@ -55,7 +62,6 @@ function shade(hex, f) {
  */
 function kernelProgram(kernel, mapping, p) {
   const n = p + 1, Np = n * n;
-  const ij = (g) => { const l = g % Np; return [l % n, Math.floor(l / n)]; };
   const all = () => true;
   if (mapping === 'node') {
     if (kernel === 'volume') {
@@ -67,15 +73,10 @@ function kernelProgram(kernel, mapping, p) {
         { text: 'rhs[g] = −(ax·rx·dx + ay·ry·dy)', cost: 1, act: all },
       ];
     }
-    return [
-      { text: 'g = gid.x; if (g >= nDof) { return; }', cost: 1, act: all },
-      { text: 'uc = u[g];  r = rhs[g]', cost: 1, act: all },
-      { text: `if (i == ${p}) { r −= c·(F_right − ax·uc) }`, cost: 1, act: (g) => ij(g)[0] === p },
-      { text: 'if (i == 0) { r += c·(F_left − ax·uc) }', cost: 1, act: (g) => ij(g)[0] === 0 },
-      { text: `if (j == ${p}) { r −= c·(F_top − ay·uc) }`, cost: 1, act: (g) => ij(g)[1] === p },
-      { text: 'if (j == 0) { r += c·(F_bottom − ay·uc) }', cost: 1, act: (g) => ij(g)[1] === 0 },
-      { text: 'rhs[g] = r', cost: 1, act: all },
-    ];
+    // the lift kernel: costs and predicates come from the tested model (lib/gpu/cost.js), the text is display only
+    const text = ['g = gid.x; if (g >= nDof) { return; }', 'uc = u[g];  r = rhs[g]', `if (i == ${p}) { r −= c·(F_right − ax·uc) }`,
+      'if (i == 0) { r += c·(F_left − ax·uc) }', `if (j == ${p}) { r −= c·(F_top − ay·uc) }`, 'if (j == 0) { r += c·(F_bottom − ay·uc) }', 'rhs[g] = r'];
+    return liftProgram(p).map((ln, k) => ({ ...ln, text: text[k] }));
   }
   if (kernel === 'volume') {
     return [
@@ -121,21 +122,15 @@ function threadsWidget(fig) {
   function stats() {
     const n = st.p + 1, Np = n * n, nE = 9, nDof = nE * Np;
     const T = st.mapping === 'node' ? nDof : nE, WG = 2 * st.W;
-    const nWG = Math.ceil(T / WG), lanes = nWG * WG, nWarps = lanes / st.W;
     const prog = kernelProgram(st.kernel, st.mapping, st.p);
-    let issued = 0, useful = 0;
-    for (const ln of prog) for (let w = 0; w < nWarps; w++) {
-      let a = 0;
-      for (let l = 0; l < st.W; l++) { const t = w * st.W + l; if (t < T && ln.act(t)) a++; }
-      if (a > 0) { issued += ln.cost * st.W; useful += ln.cost * a; }
-    }
-    const slotsPerWarp = prog.reduce((s, ln) => s + ln.cost, 0);
+    const S = simtStats(prog, T, st.W, WG); // issued vs useful lane-slots (lib/gpu/cost.js, unit-tested)
+    const nWG = S.nWorkgroups, nWarps = S.nWarps, slotsPerWarp = S.slotsPerWarp;
     const bnd = []; // boundary nodes in face order (right, left, top, bottom) — visited by the per-element lift
     for (let j = 0; j < n; j++) bnd.push(j * n + n - 1);
     for (let j = 0; j < n; j++) bnd.push(j * n);
     for (let i = 0; i < n; i++) bnd.push((n - 1) * n + i);
     for (let i = 0; i < n; i++) bnd.push(i);
-    return { n, Np, nDof, T, WG, nWG, nWarps, prog, eff: useful / issued, slotsPerWarp, bnd };
+    return { n, Np, nDof, T, WG, nWG, nWarps, prog, eff: S.efficiency, slotsPerWarp, bnd };
   }
 
   function draw() {
@@ -168,7 +163,7 @@ function threadsWidget(fig) {
         ctx.beginPath(); ctx.arc(view.X(x), view.Y(y), rad, 0, 2 * Math.PI);
         ctx.fillStyle = active ? col : Tm.rule; ctx.fill();
         if (!active && st.mapping === 'node') { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.stroke(); }
-        if (S.n <= 3 && st.mapping === 'node') { ctx.fillStyle = active ? '#fff' : Tm.soft; ctx.fillText(String(g), view.X(x), view.Y(y)); }
+        if (S.n <= 3 && st.mapping === 'node') { ctx.fillStyle = active ? textOn(col) : Tm.soft; ctx.fillText(String(g), view.X(x), view.Y(y)); }
       }
       if (st.mapping === 'element') {
         ctx.fillStyle = thrColor(e); ctx.globalAlpha = 0.18;
@@ -250,11 +245,13 @@ function rooflineWidget(fig) {
     const xs = [], ys = [];
     for (let k = 0; k <= 200; k++) { const I = 0.03 * (1e4) ** (k / 200); xs.push(I); ys.push(roofline(I, P, B) / G); }
     Pl.line(xs, ys, { color: Tm.ink, width: 2.6 });
-    const ridge = P / B;
+    const ridge = ridgePoint(P, B);
     Pl.vline(ridge, { color: Tm.faint });
-    Pl.text(ridge, 1.6, ` ridge I* = ${fmt(ridge)}`, { color: Tm.soft, font: `11px ${Tm.ui}` });
-    Pl.text(ridge * 0.5, P / G, 'memory-bound: B·I ', { color: Tm.soft, font: `11px ${Tm.ui}`, align: 'right', baseline: 'bottom', dy: -4 });
-    Pl.text(ridge * 1.3, P / G, 'compute-bound', { color: Tm.soft, font: `11px ${Tm.ui}`, baseline: 'bottom', dy: -4 });
+    // labels are placed on the side with room, so nothing is clipped on narrow (phone) canvases
+    const rightRoom = Pl.px1 - Pl.X(ridge) > 110;
+    Pl.text(ridge, 1.6, rightRoom ? ` ridge I* = ${fmt(ridge)}` : `ridge I* = ${fmt(ridge)} `, { color: Tm.soft, font: `11px ${Tm.ui}`, align: rightRoom ? 'left' : 'right' });
+    Pl.text(0.035, 3e4, 'memory-bound: P = B·I', { color: Tm.soft, font: `11px ${Tm.ui}`, baseline: 'top' });
+    if (ridge < 300) Pl.text(300, Math.min(P / G, 1.9e5), 'compute-bound ', { color: Tm.soft, font: `11px ${Tm.ui}`, align: 'right', baseline: P / G > 6e4 ? 'top' : 'bottom', dy: P / G > 6e4 ? 4 : -4 });
     const names = ['volume', 'surface', 'lift', 'rkStage', 'fused'];
     const col = { volume: C[0], surface: C[1], lift: C[2], rkStage: C[3], fused: C[4] };
     // trails p = 1..8
@@ -272,18 +269,17 @@ function rooflineWidget(fig) {
     // model rates for one RK step (5 stages) — DOF-updates per second
     const tStage = ks.filter((k) => k.name !== 'fused').reduce((s, k) => s + Math.max(k.flops / P, k.bytes / B), 0);
     const fz = ks.find((k) => k.name === 'fused'), tFused = Math.max(fz.flops / P, fz.bytes / B);
-    const items = names.map((nm) => ({ label: nm, color: col[nm], marker: true }));
+    // (no legend box: every dot carries its name, and the read-out lists the kernels — a legend would hide dots on small screens)
     let mtxt = '';
     if (measured) {
       const tot = stageTotals(measured.p), gfl = measured.dofPerSec * 5 * tot.flops / G, I = tot.flops / tot.bytes;
       Pl.text(I, gfl, '★', { color: '#e0457b', align: 'center', font: `22px ${Tm.ui}` });
-      items.push({ label: `measured, Benchmark (p=${measured.p})`, color: '#e0457b', marker: true });
+      Pl.text(I, gfl, `measured (p=${measured.p})`, { color: '#e0457b', align: 'left', dx: 12, font: `600 11px ${Tm.ui}` });
       mtxt = `\nmeasured (your GPU, p=${measured.p}):\n  ${fmt(measured.dofPerSec / 1e9)} G DOF-updates/s\n  ≈ ${fmt(gfl)} GFLOP/s`;
     }
-    Pl.legend(items, 'tl');
     const rows = ks.map((k) => `${k.name.padEnd(8)}${fmt(k.flops).padStart(6)}${fmt(k.bytes).padStart(6)}${fmt(k.ai).padStart(7)}`).join('\n');
     out.set(`per DOF & stage (f32):\nkernel   FLOP  byte  FLOP/B\n${rows}\n\nmodel DOF-updates/s:\n  4 kernels ${fmt(1 / (5 * tStage) / 1e9)} G\n  fused     ${fmt(1 / (5 * tFused) / 1e9)} G${mtxt}`);
-    selfCheck('roofline: all DG kernels memory-bound on the generic desktop GPU', ks.every((k) => k.ai < 30e12 / 800e9));
+    selfCheck('roofline: all DG kernels memory-bound on the generic desktop GPU', ks.every((k) => k.ai < ridgePoint(30e12, 800e9)));
   }
   s1.onResize(draw);
   draw();
@@ -333,8 +329,8 @@ function layoutWidget(fig) {
         ctx.globalAlpha = 1;
         if (read.has(a)) {
           ctx.fillStyle = shade(CAT[f], -0.35); ctx.fillRect(x + 0.5, y + 0.5, cw - 1, ch - 1);
-          ctx.fillStyle = '#fff'; ctx.fillText(`t${read.get(a)}`, x + cw / 2, y + ch / 2);
-        } else if (cw > 15 && (itemOf(a) < 100 || cw > 24)) { ctx.fillStyle = '#333'; ctx.fillText(String(itemOf(a)), x + cw / 2, y + ch / 2); }
+          ctx.fillStyle = textOn(shade(CAT[f], -0.35)); ctx.fillText(`t${read.get(a)}`, x + cw / 2, y + ch / 2);
+        } else if (cw > 15 && (itemOf(a) < 100 || cw > 24)) { ctx.fillStyle = textOn(shade(CAT[f], 0.55), 0.6, Tm.bg); ctx.fillText(String(itemOf(a)), x + cw / 2, y + ch / 2); }
       }
       for (let q = 0; q < perRow / seg; q++) { // segment boxes
         const sId = (r * perRow) / seg + q, x = left + q * seg * cw;
@@ -451,7 +447,7 @@ function raceWidget(fig) {
         ctx.beginPath(); ctx.arc(x, y, fs * 0.95, 0, 2 * Math.PI);
         ctx.fillStyle = S.done ? (ok ? Tm.accent3 : Tm.accent2) : Tm.elev; ctx.fill();
         ctx.strokeStyle = Tm.ink; ctx.lineWidth = 1; ctx.stroke();
-        ctx.fillStyle = S.done ? '#fff' : Tm.ink; ctx.font = `600 ${fs}px ${Tm.ui}`;
+        ctx.fillStyle = S.done ? Tm.onAccent : Tm.ink; ctx.font = `600 ${fs}px ${Tm.ui}`; // onAccent: readable on the accent discs in both schemes
         ctx.fillText(String(val), x, y);
         if (S.done && !ok) { ctx.fillStyle = Tm.accent2; ctx.font = `${fs * 0.8}px ${Tm.ui}`; ctx.fillText(`≠${valence[v]}`, x + fs * 1.5, y - fs * 0.9); }
       }
@@ -516,36 +512,89 @@ function makeEvaluator(p) {
 function liveWidget(fig) {
   const L = widgetLayout(fig);
   const status = h('div', 'gpu-status', 'Checking for WebGPU…');
+  status.setAttribute('role', 'status');
   fig.insertBefore(status, L.body);
   const p1 = L.panel('solution $u_h$');
   p1.style.flex = '1 1 380px';
-  const s1 = createCanvas(p1, { aspect: 1 });
+  const s1 = createCanvas(p1, { aspect: 1, description: 'Colour plot of the advected field u_h on the unit square; time, step count and throughput are in the read-out.' });
   const st = { N: 64, p: 3, init: 'twin', batch: 20, running: false, visible: true, verify: null, cpuRate: null, gpuRate: null, busy: false };
-  let disc = null, gpu = null, cpu = null, u0 = null, field = null, evalF = null, gpuStatus = null, mass0 = 0;
+  // gpu: the solver whose state is DISPLAYED. scratch: a second GPU solver (same compiled pipelines) on which
+  // Verify and Benchmark run, so that they never advance the simulation the user is looking at.
+  let disc = null, gpu = null, scratch = null, cpu = null, u0 = null, field = null, evalF = null, gpuStatus = null, mass0 = 0;
+  let gen = 0;          // rebuild generation: a queued rebuild that has been superseded is dropped
+  let gpuLost = false;  // the device was lost / a GPU operation failed: we run on the CPU twin until Reset re-acquires a device
   const ctl = L.controls;
   select(ctl, { label: 'mesh $N\\times N$', value: String(st.N), options: [8, 16, 32, 64, 128, 256].map((v) => ({ value: String(v), label: `${v} × ${v}` })), onChange: (v) => { st.N = +v; rebuild(); } });
   slider(ctl, { label: 'degree $p$', min: 1, max: 3, step: 1, value: st.p, onChange: (v) => { st.p = v; rebuild(); } });
   select(ctl, { label: 'initial condition', value: st.init, options: [{ value: 'twin', label: 'two blobs (±)' }, { value: 'blob', label: 'one blob' }, { value: 'sines', label: 'sin 2πx · sin 2πy' }], onChange: (v) => { st.init = v; rebuild(); } });
   slider(ctl, { label: 'steps per frame (one submission)', min: 1, max: 200, step: 1, value: st.batch, onInput: (v) => { st.batch = v; } });
   const row = buttonRow(ctl);
-  const playB = button(row, { label: '▶ Run', primary: true, onClick: () => { st.running = !st.running; playB.setLabel(st.running ? '❚❚ Pause' : '▶ Run'); if (st.running) loop(); } });
+  const setRunning = (r) => { st.running = r; playB.setLabel(r ? '❚❚ Pause' : '▶ Run'); if (r) loop(); };
+  const playB = button(row, { label: '▶ Run', primary: true, onClick: () => setRunning(!st.running) });
   button(row, { label: '↺ Reset', onClick: () => rebuild() });
   const row2 = buttonRow(ctl);
   const verifyB = button(row2, { label: 'Verify vs CPU', onClick: () => enqueue(verify) });
-  button(row2, { label: 'Benchmark', onClick: () => enqueue(benchmark) });
+  button(row2, { label: 'Benchmark', onClick: () => enqueue(() => benchmark()) });
   const out = readout(ctl);
+  const esc = (t) => String(t).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 
   // serialise async operations (GPU runs, read-backs, rebuilds) so they never overlap
   let chain = Promise.resolve();
-  const enqueue = (fn) => (chain = chain.then(fn).catch((err) => { console.error(err); out.set(`error: ${err.message}`); }));
+  const enqueue = (fn) => (chain = chain.then(fn).catch(onFailure));
+
+  /** An operation threw. If a GPU solver is involved this is (almost always) a lost device: carry on with the CPU twin. */
+  function onFailure(err) {
+    console.error(err);
+    if (gpu || scratch) {
+      toCpu(gpuStatus && gpuStatus.lost ? `the WebGPU device was lost (${gpuStatus.lostReason}).` : `a GPU operation failed (${err.message}).`);
+      return 'recovered';
+    }
+    reportError('widget #w-live', err);
+    out.set(`error: ${esc(err.message)}`);
+    setRunning(false);
+    return undefined;
+  }
+
+  /** Give up the GPU solvers and continue from the last displayed state on the f64 CPU twin. */
+  function toCpu(reason) {
+    const steps = gpu ? gpu.steps : cpu ? cpu.steps : 0;
+    for (const s of [gpu, scratch]) { try { s?.destroy(); } catch (_e) { /* buffers of a lost device are already gone */ } }
+    gpu = null; scratch = null; gpuLost = true;
+    if (disc) { cpu = makeCpuSolver(disc, field); cpu.steps = steps; cpu.t = steps * disc.stableDt(); }
+    st.gpuRate = null; st.verify = null;
+    showStatus('bad', `<b>GPU not in use:</b> ${esc(reason)} The simulation continues on the CPU twin (the same algorithm in JavaScript, f64) from the current state. “Reset” tries to get the GPU back.`);
+    if (disc) { draw(); report(); }
+  }
+
+  function showStatus(cls, html) {
+    status.className = `gpu-status ${cls}`; status.innerHTML = html;
+    const usingGpu = cls === 'ok';
+    verifyB.el.hidden = !usingGpu;
+    p1.querySelector('.canvas-label').textContent = usingGpu ? 'solution u_h (read back from the GPU once per frame)' : 'solution u_h (CPU twin)';
+  }
+  function showDetected() {
+    if (gpuStatus.ok) showStatus('ok', `<b>WebGPU available</b> — ${esc(gpuStatus.info)}. Kernels run on your GPU in f32; the CPU twin runs in f64.`);
+    else showStatus('bad', `<b>WebGPU not available:</b> ${esc(gpuStatus.reason)} The widget runs the CPU twin (the same algorithm in JavaScript, f64) instead; everything else on this page works.`);
+  }
+  /** React to a device loss even when no operation is in flight (e.g. while paused). */
+  function watchLoss(gs) {
+    gs.device.lost.then((info) => enqueue(() => { if (gpuStatus === gs && (gpu || scratch)) toCpu(`the WebGPU device was lost (${info.message || info.reason || 'unknown reason'}).`); }));
+  }
 
   new IntersectionObserver((en) => { st.visible = en[0].isIntersecting; if (st.visible && st.running) loop(); }).observe(fig);
 
   const dofs = () => disc.nDof;
   const verifySteps = () => Math.max(5, Math.min(100, Math.round(3e6 / dofs())));
+  const gpuUsable = () => !!(gpuStatus && gpuStatus.ok && !gpuStatus.lost);
 
-  async function rebuildNow() {
-    if (gpu) { gpu.destroy(); gpu = null; }
+  async function rebuildNow(myGen) {
+    for (const s of [gpu, scratch]) { try { s?.destroy(); } catch (_e) { /* lost device */ } }
+    gpu = null; scratch = null;
+    if (gpuLost) { // after a loss, Reset asks for a fresh device (device.js forgets a lost one)
+      gpuStatus = await getGPU();
+      gpuLost = !gpuUsable();
+      if (!gpuLost) { showDetected(); watchLoss(gpuStatus); }
+    }
     disc = makeDGAdv2D({ N: st.N, p: st.p, a: [1, 0.5] });
     u0 = disc.interpolate(INITIAL[st.init]);
     mass0 = disc.mass(u0);
@@ -554,46 +603,63 @@ function liveWidget(fig) {
     evalF = makeEvaluator(st.p);
     field = u0;
     st.verify = null; st.cpuRate = null; st.gpuRate = null;
-    if (gpuStatus && gpuStatus.ok) {
-      try { gpu = await createGpuSolver(gpuStatus.device, disc, u0, { dt }); }
-      catch (err) { gpu = null; status.className = 'gpu-status bad'; status.textContent = `GPU solver failed (${err.message}); using the CPU twin.`; }
+    if (gpuUsable() && !gpuLost) {
+      const gs = gpuStatus;
+      try { gpu = await createGpuSolver(gs.device, disc, u0, { dt }); } catch (err) {
+        gpu = null;
+        await Promise.race([gs.device.lost, new Promise((r) => setTimeout(r, 100))]); // was it a device loss?
+        if (gs.lost) toCpu(`the WebGPU device was lost (${gs.lostReason}).`);
+        else {
+          gpuLost = true; // a real defect (e.g. a shader that does not compile): visible AND reported to the self-test
+          reportError('widget #w-live: GPU solver', err);
+          showStatus('bad', `<b>GPU solver failed</b> (${esc(err.message)}); using the CPU twin.`);
+        }
+      }
     }
-    draw();
-    if (dofs() <= 70000) { await verify(); await benchmark(true); }
+    draw(); report();
+    // Automatic verification + quick benchmark for moderate sizes. Both run on scratch copies:
+    // the displayed state stays the initial condition at t = 0. Skipped if another rebuild is already queued.
+    if (myGen === gen && dofs() <= 70000) { await verify(); if (myGen === gen) await benchmark(true); }
     report();
   }
-  const rebuild = () => enqueue(rebuildNow);
+  const rebuild = () => { const g = ++gen; return enqueue(() => (g === gen ? rebuildNow(g) : undefined)); };
+
+  /** The GPU solver used for verification and benchmarks (created on first use after a rebuild). */
+  async function scratchSolver() {
+    if (!scratch) scratch = await createGpuSolver(gpuStatus.device, disc, u0, { dt: disc.stableDt() });
+    return scratch;
+  }
 
   async function verify() {
     if (!gpu) { st.verify = null; report(); return; }
     const K = verifySteps(), dt = disc.stableDt();
-    gpu.setState(u0);
-    await gpu.run(K);
-    const ug = await gpu.read();
+    const s = await scratchSolver();
+    s.setState(u0);
+    await s.run(K);
+    const ug = await s.read();
     const c = makeCpuSolver(disc, u0); c.run(K, dt);
     let umax = 0; for (const v of c.u()) umax = Math.max(umax, Math.abs(v));
     st.verify = { K, diff: maxAbsDiff(ug, c.u()), umax };
-    field = ug; cpu = c;
     selfCheck('live: GPU matches CPU twin to f32 accuracy', st.verify.diff < 1e-4 * Math.max(1, umax));
-    draw(); report();
+    report();
   }
 
   async function benchmark(quick = false) {
     const dt = disc.stableDt();
-    // CPU twin: as many steps as fit in ~120 ms (at least one), on a scratch copy
+    // CPU twin: as many steps as fit in the time budget (at least one), on a scratch copy
     const c = makeCpuSolver(disc, field);
     let n = 0; const t0 = performance.now();
     do { c.step(dt); n++; } while (performance.now() - t0 < (quick ? 60 : 150));
     st.cpuRate = n / ((performance.now() - t0) / 1000);
     if (gpu) {
-      await gpu.run(2); // warm-up
-      let k = 8, ms = await gpu.run(k);
-      while (ms < (quick ? 60 : 200) && k < 4096) { k *= 2; ms = await gpu.run(k); }
+      const s = await scratchSolver();
+      await s.run(2); // warm-up
+      let k = 8, ms = await s.run(k);
+      while (ms < (quick ? 60 : 200) && k < 4096) { k *= 2; ms = await s.run(k); }
       st.gpuRate = k / (ms / 1000);
       publish();
-      field = await gpu.read();
     }
-    draw(); report();
+    report();
   }
 
   function publish() {
@@ -619,9 +685,11 @@ function liveWidget(fig) {
         st.cpuRate = n / ((performance.now() - t0) / 1000);
         field = cpu.u();
       }
+      let finite = true; for (let g = 0; g < field.length; g += 97) if (!Number.isFinite(field[g])) { finite = false; break; }
+      if (!finite) { setRunning(false); out.set('<b class="status-bad">The solution is no longer finite — stopped. Press Reset.</b>'); draw(); return false; }
       draw(); report();
       return true;
-    }).then((go) => { if (go) requestAnimationFrame(frame); else st.busy = false; });
+    }).then((go) => { if (go === true || (go === 'recovered' && st.running)) requestAnimationFrame(frame); else st.busy = false; });
     frame();
   }
 
@@ -633,10 +701,10 @@ function liveWidget(fig) {
     let m = 0; for (let e = 0; e < disc.nElem; e++) for (let j = 0; j <= st.p; j++) for (let i = 0; i <= st.p; i++) m += disc.w[i] * disc.w[j] * field[e * disc.Np + j * (st.p + 1) + i];
     m *= disc.h * disc.h / 4;
     let s = `DOFs ${dofs().toLocaleString('en')}   Δt = ${fmt(disc.stableDt())}\nt = ${t.toFixed(3)}   steps = ${steps}\n`;
-    if (gpu) s += `\n<b>GPU</b>  ${st.gpuRate ? `${fmt(st.gpuRate)} steps/s\n     ${big(st.gpuRate * dofs())}DOF-updates/s\n     ≈ ${fmt(st.gpuRate * bytesPerStep / 1e9)} GB/s effective` : '–'}`;
+    if (gpu) s += `\n<b>GPU</b>  ${st.gpuRate ? `${fmt(st.gpuRate)} steps/s\n     ${big(st.gpuRate * dofs())}DOF-updates/s\n     ≈ ${fmt(st.gpuRate * bytesPerStep / 1e9)} GB/s effective` : '– (press Benchmark)'}`;
     s += `\n<b>CPU twin</b> ${st.cpuRate ? `${fmt(st.cpuRate)} steps/s\n     ${big(st.cpuRate * dofs())}DOF-updates/s` : '– (press Benchmark)'}`;
     if (gpu && st.gpuRate && st.cpuRate) s += `\n<b>speed-up ×${fmt(st.gpuRate / st.cpuRate)}</b>`;
-    if (gpu) s += st.verify ? `\n\nmax|GPU−CPU| after ${st.verify.K} steps\n  = ${st.verify.diff.toExponential(2)}  (max|u| ${fmt(st.verify.umax)})` : '\n\n(press Verify to compare with CPU)';
+    if (gpu) s += st.verify ? `\n\nmax|GPU−CPU| after ${st.verify.K} steps from u_0\n  = ${st.verify.diff.toExponential(2)}  (max|u| ${fmt(st.verify.umax)})` : '\n\n(press Verify to compare with CPU)';
     s += `\nmass drift |∫u_h − ∫u_0| = ${Math.abs(m - mass0).toExponential(1)}`;
     out.set(s);
   }
@@ -663,15 +731,19 @@ function liveWidget(fig) {
   // initialise: detect the GPU, then build
   const ready = (async () => {
     gpuStatus = await getGPU();
-    p1.querySelector('.canvas-label').textContent = gpuStatus.ok ? 'solution u_h (read back from the GPU once per frame)' : 'solution u_h (CPU twin)';
-    if (gpuStatus.ok) { status.className = 'gpu-status ok'; status.innerHTML = `<b>WebGPU available</b> — ${gpuStatus.info}. Kernels run on your GPU in f32; the CPU twin runs in f64.`; }
-    else { verifyB.el.hidden = true; status.className = 'gpu-status bad'; status.innerHTML = `<b>WebGPU not available:</b> ${gpuStatus.reason} The widget runs the CPU twin (the same algorithm in JavaScript, f64) instead; everything else on this page works.`; }
-    await enqueue(rebuildNow);
+    showDetected();
+    if (gpuUsable()) watchLoss(gpuStatus);
+    await rebuild();
+    // the widget must start at t = 0 showing the initial condition, also after the automatic verify + benchmark
+    let untouched = (gpu ? gpu.steps : cpu.steps) === 0 && field === u0;
+    if (gpu) untouched = untouched && maxAbsDiff(await enqueue(() => gpu.read()), Float32Array.from(u0)) === 0;
+    selfCheck('live: starts at t = 0 with the initial condition (verify/benchmark do not advance it)', untouched);
     // CPU sanity checks (also without a GPU): a few steps conserve mass
     const d = makeDGAdv2D({ N: 8, p: 2, a: [1, 0.5] }), c = makeCpuSolver(d, d.interpolate(INITIAL.twin)), m0 = d.mass(c.u());
     c.run(10, d.stableDt());
     selfCheck('live: CPU twin conserves mass', Math.abs(d.mass(c.u()) - m0) < 1e-13);
   })();
+  ready.catch((err) => reportError('widget #w-live', err));
   return { ready };
 }
 

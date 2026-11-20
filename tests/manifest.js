@@ -22,6 +22,7 @@ export const TEST_FILES = [
   'conv/webspline.test.js',
   'gpu/dgadv-gpu.test.js',
   'unit/basis.test.js',
+  'unit/contrast.test.js',
   'unit/cutquad.test.js',
   'unit/dd.test.js',
   'unit/dgref.test.js',
@@ -30,6 +31,7 @@ export const TEST_FILES = [
   'unit/frcorrections.test.js',
   'unit/gpu-cputwin.test.js',
   'unit/gpu-model.test.js',
+  'unit/harness.test.js',
   'unit/inertia.test.js',
   'unit/interp.test.js',
   'unit/la.test.js',
@@ -38,4 +40,6 @@ export const TEST_FILES = [
   'unit/primer.test.js',
   'unit/quad.test.js',
   'unit/rk.test.js',
+  'unit/selftest.test.js',
+  'unit/ui-shell.test.js',
 ];

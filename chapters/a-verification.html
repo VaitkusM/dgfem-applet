@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Appendix: verification &amp; glossary — Fluxes, DG &amp; friends</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232c5fb3'/%3E%3Cpath d='M5 22 L15 12 M17 20 L27 8' stroke='%23fff' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../css/style.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
@@ -12,9 +13,10 @@
 <style>
   dl.glossary-list dt { font: 700 15px var(--font-ui); margin-top: 1rem; }
   dl.glossary-list dd { margin: .2rem 0 0 1.2rem; }
+  table.data td.skip { color: var(--accent-4); font-weight: 600; }
 </style>
 </head>
-<body data-chapter="A">
+<body data-chapter="A" data-min-checks="1">
 <main class="content">
 
 <h1><span class="chapnum">A</span>Appendix: verification &amp; glossary</h1>
@@ -30,15 +32,19 @@ and every quantitative claim in the text (a convergence rate, a conservation pro
 (and not $2n$), Legendre and Dubiner bases are orthonormal, differentiation matrices differentiate polynomials exactly, eigenvalue solvers recover
 known spectra (including complex pairs), sparse direct and Krylov solvers reproduce known solutions, Runge–Kutta methods show their design order.</li>
 <li><b>Invariants.</b> Properties that must hold to round-off: conservation of mass in finite volume and DG methods, symmetry of SIPG/Nitsche matrices,
-equivalence of flux reconstruction with $g_{DG}$ and nodal DG, equality of hybridized and mixed solutions, GPU vs CPU agreement, zero row sums of
+equivalence of flux reconstruction with $g_{DG}$ and nodal DG, equality of hybridized and mixed solutions, GPU vs CPU agreement (in browsers with WebGPU), zero row sums of
 stiffness matrices, the divergence theorem in the chapter 0 widget, …</li>
 <li><b>Convergence against manufactured solutions</b> (<span class="term" data-g="mms">MMS</span>): choose an exact solution $u$, compute the data that produces it,
 solve on a sequence of meshes and fit the slope of $\log(\text{error})$ against $\log h$. A test passes if the observed rate lies in
 $[r - 0.2,\ r + 0.3]$ around the theoretical rate $r$. Errors are always measured with high-order quadrature, never only at nodes.</li>
 <li><b>Page self-tests.</b> Each chapter page opened with <code>?selftest=1</code> reports widget errors and the results of built-in sanity checks
-(finite values, conservation, …). A script runs this for every page in headless Chrome.</li>
+(finite values, conservation, …); the verdict is only positive if, in addition, the formulas were typeset and nothing failed to load.
+A script (<code>tools/smoke.sh</code>) runs this for every page in headless Chrome, locally and on every push.</li>
 </ol>
-<p>The same test files run headless under Deno on every push (GitHub Actions) and in the browser, here:</p>
+<p>The same test files run headless under Deno on every push (GitHub Actions) and in the browser, here. A test that cannot run in a given
+environment is reported as <b>skipped</b>, never as passed: the WebGPU tests of chapter 12 need a browser with WebGPU and a GPU, so they are
+skipped under Deno and in the automated headless-Chrome run, and are executed by this page in your browser (if it has WebGPU) and by the
+project's GPU smoke test on a developer machine.</p>
 
 <figure class="widget" id="w-tests">
 <figcaption><b>The test suite, live.</b> Each row is one test from <code>tests/</code>; the names say what is checked. Long convergence tests solve many problems,

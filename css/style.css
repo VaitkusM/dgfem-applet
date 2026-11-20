@@ -5,7 +5,9 @@
    Prose is set in a serif at a comfortable measure (~72ch); interactive
    widgets ("figures") may break out wider than the prose column.
    All colours are CSS custom properties so canvases can read them too
-   (see lib/viz/theme.js). Dark mode follows the OS preference.
+   (theme() in lib/viz/canvas.js). Dark mode follows the OS preference.
+   Text/background pairs are kept at WCAG AA contrast (≥ 4.5:1) in both schemes;
+   tests/unit/contrast.test.js checks the pairs listed there against this file.
    ========================================================================== */
 
 :root {
@@ -14,11 +16,12 @@
   --bg-sunk: #f2f0ea;
   --ink: #1d1f24;
   --ink-soft: #4a4f5a;
-  --ink-faint: #8a8f99;
+  --ink-faint: #676c76;      /* 4.6:1 on --bg-sunk, 5.0:1 on --bg */
   --rule: #e2ded4;
   --accent: #2c5fb3;        /* links, primary series        */
   --accent-2: #c2410c;      /* secondary series, warnings   */
-  --accent-3: #0f8a6a;      /* tertiary series, "good"      */
+  --accent-3: #0b7a5d;      /* tertiary series, "good"      */
+  --on-accent: #ffffff;     /* text on top of an accent fill */
   --accent-4: #7c3aed;      /* fourth series                */
   --warn-bg: #fff4e5;
   --note-bg: #eef4ff;
@@ -42,12 +45,13 @@
     --bg-sunk: #111318;
     --ink: #e7e8eb;
     --ink-soft: #b5b9c2;
-    --ink-faint: #7d828d;
+    --ink-faint: #878c97;
     --rule: #2d313a;
     --accent: #7aa7ff;
     --accent-2: #ff9a62;
     --accent-3: #4fd1a5;
     --accent-4: #b794f6;
+    --on-accent: #0b1020;   /* the dark-mode accents are light: dark text on them (7.7:1 or more) */
     --warn-bg: #2e2416;
     --note-bg: #19243a;
     --good-bg: #15302a;
@@ -74,6 +78,7 @@ code { background: var(--code-bg); padding: .08em .3em; border-radius: 4px; }
 pre { background: var(--code-bg); padding: .8rem 1rem; border-radius: 8px; overflow-x: auto; line-height: 1.45; }
 pre code { background: none; padding: 0; }
 img, canvas, svg { max-width: 100%; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* ---------- layout ------------------------------------------------------ */
 .layout { display: flex; min-height: 100vh; }
@@ -173,7 +178,17 @@ figure.widget > figcaption b { color: var(--ink); }
 .widget-body > .panel { flex: 1 1 300px; min-width: 0; }
 .widget-body > .controls { flex: 0 0 250px; }
 .canvas-wrap { position: relative; width: 100%; }
-.canvas-wrap canvas { display: block; width: 100%; border-radius: 6px; background: var(--bg); touch-action: none; }
+.canvas-wrap canvas { display: block; width: 100%; border-radius: 6px; background: var(--bg); }
+/* (touch-action: none is set by onPointer() only on canvases with drag interaction, so a swipe
+   that starts on any other canvas scrolls the page as usual) */
+.canvas-wrap canvas:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+/* keyboard "virtual pointer" of interactive canvases (lib/viz/canvas.js, onPointer) */
+.kbd-cursor { position: absolute; width: 22px; height: 22px; margin: -11px 0 0 -11px; border-radius: 50%; pointer-events: none;
+  border: 2px solid var(--ink); box-shadow: 0 0 0 2px var(--bg-elev); }
+.kbd-cursor.pressed { background: color-mix(in srgb, var(--accent) 45%, transparent); border-color: var(--accent); }
+.kbd-hint { position: absolute; left: 6px; bottom: 6px; right: 6px; pointer-events: none; font: 12px/1.35 var(--font-ui);
+  color: var(--ink); background: var(--bg-elev); border: 1px solid var(--rule); border-radius: 6px; padding: .2rem .45rem; opacity: .95; }
+.kbd-cursor[hidden], .kbd-hint[hidden] { display: none; }
 .canvas-label { font-size: 12px; color: var(--ink-soft); margin: .2rem 0 .3rem; font-weight: 600; }
 .readout { font: 13px/1.5 var(--font-mono); color: var(--ink-soft); margin-top: .4rem; white-space: pre-wrap; }
 .readout b { color: var(--ink); }
@@ -187,7 +202,7 @@ figure.widget > figcaption b { color: var(--ink); }
 .ctl-label { font-weight: 600; color: var(--ink-soft); font-size: 13px; }
 .ctl-value { font: 12.5px var(--font-mono); color: var(--ink); }
 .ctl input[type=range] { width: 100%; accent-color: var(--accent); }
-.ctl select { font: 13px var(--font-ui); padding: .25rem .3rem; border-radius: 6px; border: 1px solid var(--rule); background: var(--bg); color: var(--ink); }
+.ctl select { font: 13px var(--font-ui); padding: .25rem .3rem; border-radius: 6px; border: 1px solid var(--rule); background: var(--bg); color: var(--ink); max-width: 100%; min-width: 0; }
 .ctl.check { flex-direction: row; align-items: center; gap: .45rem; }
 .ctl.check input { accent-color: var(--accent); }
 .btn-row { display: flex; flex-wrap: wrap; gap: .4rem; }
@@ -196,13 +211,14 @@ button.btn {
   border: 1px solid var(--rule); background: var(--bg); color: var(--ink);
 }
 button.btn:hover { border-color: var(--accent); color: var(--accent); }
-button.btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-button.btn.primary:hover { filter: brightness(1.08); color: #fff; }
+button.btn.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+button.btn.primary:hover { filter: brightness(1.08); color: var(--on-accent); }
 button.btn:disabled { opacity: .5; cursor: default; }
-.seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; }
+.seg { display: inline-flex; flex-wrap: wrap; max-width: 100%; border: 1px solid var(--rule); border-radius: 7px; overflow: hidden; }
 .seg button { font: 600 12.5px var(--font-ui); padding: .3rem .6rem; border: none; background: var(--bg); color: var(--ink-soft); cursor: pointer; border-right: 1px solid var(--rule); }
 .seg button:last-child { border-right: none; }
-.seg button.on { background: var(--accent); color: #fff; }
+.seg button.on { background: var(--accent); color: var(--on-accent); }
+.seg button:focus-visible { outline-offset: -3px; }
 
 /* step-through derivation */
 .steps .step { display: none; }
@@ -227,7 +243,9 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .card p { margin: 0; color: var(--ink-soft); font: 14px/1.45 var(--font-ui); hyphens: manual; }
 
 /* ---------- KaTeX tweaks ---------------------------------------------- */
-.katex { font-size: 1.05em; }
+.katex { font-size: 1.05em; position: relative; }
+/* (position: relative: KaTeX hides its MathML copy with position:absolute; without a positioned
+   ancestor inside the scrolling box, a wide formula's hidden copy would widen the whole page) */
 .katex-display { overflow-x: auto; overflow-y: hidden; padding: .2rem 0; }
 .ctl-label .katex, .canvas-label .katex { font-size: 1em; }
 
@@ -238,10 +256,34 @@ footer.site { max-width: var(--measure); margin: 4rem auto 0; color: var(--ink-f
   .layout { display: block; }
   .sidebar { position: fixed; z-index: 40; left: 0; top: 0; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow); }
   .sidebar.open { transform: none; }
-  .menu-toggle { display: block; position: fixed; z-index: 41; top: .6rem; left: .6rem; font: 600 13px var(--font-ui); padding: .35rem .6rem; border-radius: 6px; border: 1px solid var(--rule); background: var(--bg-elev); color: var(--ink); }
-  main.content { padding-top: 3.2rem; }
-  .widget-body > .controls { flex: 1 1 100%; }
+  /* the menu button is a slim opaque bar that sticks to the top: it never floats over figures */
+  .menu-toggle { display: block; position: sticky; z-index: 41; top: 0; width: 100%; text-align: left; font: 600 14px var(--font-ui);
+    padding: .5rem 1rem; border: none; border-bottom: 1px solid var(--rule); background: var(--bg-elev); color: var(--ink); cursor: pointer; }
+  .menu-toggle:focus-visible { outline-offset: -3px; }
+  .sidebar { padding-top: 3rem; }
+  html { scroll-padding-top: 3.2rem; }
+  main.content { padding-top: 1.4rem; }
+  .widget-body > .controls { flex: 1 1 100%; min-width: 0; }
   body { font-size: 17px; }
+  /* Wide tables scroll inside their own box instead of widening the page. */
+  .content table { display: block; max-width: 100%; overflow-x: auto; }
+  table.notation-table td:first-child { white-space: normal; width: auto; }
+  .controls { max-width: 100%; }
+  /* Safety net: an unbreakable inline formula wider than the screen scrolls inside its paragraph
+     (better: turn such a formula into display math, which KaTeX can scroll on its own). */
+  .content p, .content figcaption, .content dd { overflow-x: auto; overflow-y: hidden; }
+}
+@media (max-width: 560px) {
+  /* multi-column control grids (".controls.wide" of some chapters) collapse to one column on phones */
+  figure.widget .widget-body > .controls.wide { grid-template-columns: minmax(0, 1fr); }
+  figure.widget .widget-body > .controls.wide > * { grid-column: 1 / -1; min-width: 0; }
+}
+
+/* ---------- reduced motion --------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+  .card:hover { transform: none; }
 }
 
 /* tables placed directly in the prose column: centre them; .text = left-aligned textual cells */

@@ -5,7 +5,7 @@
 import { test, assert, assertClose } from '../harness.js';
 import { makeDGAdv2D, makeCpuSolver, LSRK4, CFL_SAFE, INITIAL } from '../../lib/gpu/cputwin.js';
 import { makeStepper, stabilityAmp } from '../../lib/core/time/rk.js';
-import { lagrangeValues, lagrangeDerivs } from '../../lib/core/basis/lagrange.js';
+import { lagrangeDerivs } from '../../lib/core/basis/lagrange.js';
 import { eigGeneral } from '../../lib/core/la/dense.js';
 
 /**
@@ -22,10 +22,10 @@ function naiveWeakRHS(d, u) {
     // map of this element's node values by physical position (for neighbour lookup)
     const ex = e % N, ey = (e / N) | 0;
     const faces = [ // [outward normal, neighbour element, which local nodes lie on the face]
-      { nx: 1, ny: 0, nb: ey * N + (ex + 1) % N, on: (i, j) => i === n - 1 },
-      { nx: -1, ny: 0, nb: ey * N + (ex + N - 1) % N, on: (i, j) => i === 0 },
-      { nx: 0, ny: 1, nb: ((ey + 1) % N) * N + ex, on: (i, j) => j === n - 1 },
-      { nx: 0, ny: -1, nb: ((ey + N - 1) % N) * N + ex, on: (i, j) => j === 0 },
+      { nx: 1, ny: 0, nb: ey * N + (ex + 1) % N, on: (i, _j) => i === n - 1 },
+      { nx: -1, ny: 0, nb: ey * N + (ex + N - 1) % N, on: (i, _j) => i === 0 },
+      { nx: 0, ny: 1, nb: ((ey + 1) % N) * N + ex, on: (_i, j) => j === n - 1 },
+      { nx: 0, ny: -1, nb: ((ey + N - 1) % N) * N + ex, on: (_i, j) => j === 0 },
     ];
     for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
       let r = 0;
@@ -114,7 +114,7 @@ test('cpuTwin: LSRK4 stage kernel (ping-pong) = lib/core/time/rk.js lsrk4', () =
   const u0 = d.interpolate(INITIAL.twin), dt = d.stableDt();
   const S = makeCpuSolver(d, u0); S.run(20, dt);
   const v = Float64Array.from(u0), step = makeStepper('lsrk4', d.nDof);
-  for (let k = 0; k < 20; k++) step(v, k * dt, dt, (x, t, out) => d.rhs(x, out));
+  for (let k = 0; k < 20; k++) step(v, k * dt, dt, (x, _t, out) => d.rhs(x, out));
   let m = 0; for (let g = 0; g < d.nDof; g++) m = Math.max(m, Math.abs(S.u()[g] - v[g]));
   assert(m < 1e-14, `diff ${m}`);
   assertClose(LSRK4.B.length, 5, 0);
@@ -131,5 +131,29 @@ test('cpuTwin: dt and 2dt, dt = CFL_SAFE·h/((|ax|+|ay|)(2p+1)), are inside the 
       // safety margin: even twice the time step is stable (claimed in chapter 12)
       for (const f of [1, 2]) assert(stabilityAmp('lsrk4', re[i] * f * dt, im[i] * f * dt) <= 1 + 1e-12, `unstable mode a=${a} p=${p} factor ${f}`);
     }
+  }
+});
+
+test('cpuTwin: GLL summation-by-parts identity W D + Dᵀ W = diag(−1, 0, …, 0, 1), p = 1..8 (chapter 12, strong form)', () => {
+  for (let p = 1; p <= 8; p++) {
+    const d = makeDGAdv2D({ N: 2, p }), n = d.n;
+    for (let i = 0; i < n; i++) for (let k = 0; k < n; k++) {
+      const B = i === k ? (i === 0 ? -1 : i === n - 1 ? 1 : 0) : 0;
+      assertClose(d.w[i] * d.D[i * n + k] + d.w[k] * d.D[k * n + i], B, 1e-12, 0, `p=${p} (${i},${k})`);
+    }
+    assertClose(d.w[0], 2 / (p * (p + 1)), 1e-14, 0, 'GLL end-point weight 2/(p(p+1))');
+    assertClose(d.lift, p * (p + 1) / 2, 1e-11, 0, 'lift = 1/w_0');
+  }
+});
+
+test('cpuTwin: every control setting of the live widget (N = 8..256, p = 1..3, three initial conditions) stays finite and bounded', () => {
+  for (const N of [8, 16, 32, 64, 128, 256]) for (let p = 1; p <= 3; p++) for (const init of ['twin', 'blob', 'sines']) {
+    if (N >= 128 && init !== 'twin') continue; // the large meshes are slow on the CPU: one initial condition is enough
+    const d = makeDGAdv2D({ N, p, a: [1, 0.5] }), u0 = d.interpolate(INITIAL[init]), S = makeCpuSolver(d, u0);
+    let m0 = 0; for (const v of u0) m0 = Math.max(m0, Math.abs(v));
+    S.run(N >= 128 ? 2 : 10, d.stableDt());
+    let m = 0; for (const v of S.u()) { assert(Number.isFinite(v), `non-finite value N=${N} p=${p} ${init}`); m = Math.max(m, Math.abs(v)); }
+    assert(m <= m0 * 1.2 + 1e-12, `N=${N} p=${p} ${init}: max|u| grew from ${m0} to ${m}`);
+    assert(d.stableDt() > 0 && S.steps === (N >= 128 ? 2 : 10), 'step count');
   }
 });

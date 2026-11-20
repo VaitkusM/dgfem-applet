@@ -2,7 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>GPU tests — Fluxes, DG &amp; friends</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232c5fb3'/%3E%3Cpath d='M5 22 L15 12 M17 20 L27 8' stroke='%23fff' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../../css/style.css">
 <style> main { max-width: 60rem; margin: 2rem auto; padding: 0 1rem; font-family: var(--font-ui); } pre { white-space: pre-wrap; } </style>
 </head>
@@ -14,14 +16,18 @@
 <pre id="summary" hidden></pre>
 </main>
 <script type="module">
-import { registry } from '../harness.js';
+import { registry, runTest } from '../harness.js';
 import { GPU_TEST_LOG } from './dgadv-gpu.test.js';
 const log = document.getElementById('log');
-const summary = { passed: 0, failed: 0, failures: [], webgpu: !!navigator.gpu, log: GPU_TEST_LOG };
+// passed + failed + skipped = number of tests; "skipped" means WebGPU was unavailable and NOTHING was verified
+const summary = { passed: 0, failed: 0, skipped: 0, failures: [], skippedTests: [], webgpu: !!navigator.gpu, log: GPU_TEST_LOG };
 for (const t of registry) {
-  try { await t.fn(); summary.passed++; } catch (e) { summary.failed++; summary.failures.push(`${t.name}: ${e.message}`); }
+  const r = await runTest(t);
+  if (r.status === 'pass') summary.passed++;
+  else if (r.status === 'skip') { summary.skipped++; summary.skippedTests.push(`${t.name}: ${r.msg}`); }
+  else { summary.failed++; summary.failures.push(`${t.name}: ${r.msg}`); }
 }
-log.textContent = GPU_TEST_LOG.join('\n');
+log.textContent = [...GPU_TEST_LOG, `${summary.passed} passed, ${summary.failed} failed, ${summary.skipped} skipped`, ...summary.failures].join('\n');
 const pre = document.getElementById('summary');
 pre.textContent = JSON.stringify(summary); pre.hidden = false;
 </script>

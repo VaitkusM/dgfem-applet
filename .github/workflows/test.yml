@@ -3,6 +3,8 @@ on:
   push:
   pull_request:
 jobs:
+  # Numerical test suite (tests/**/*.test.js) under Deno. Browser-only tests are ignored here
+  # and run in the "smoke" job.
   deno:
     runs-on: ubuntu-latest
     steps:
@@ -12,3 +14,30 @@ jobs:
           deno-version: v2.x
       - name: Run test suite
         run: deno task test
+
+  # Static analysis: catches syntax errors and common mistakes in ALL scripts, including the
+  # chapter scripts that no Deno test imports.
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+      - name: deno lint
+        run: deno task lint
+
+  # Every page in headless Chrome: the landing page and all chapters must report "ok":true in
+  # self-test mode, and the in-browser test page must have no failures (tools/smoke.sh).
+  # WebGPU is not available on the runners: GPU tests are reported as skipped (run
+  # `tools/smoke.sh --gpu` locally for those).
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke test all pages
+        env:
+          CHROME: google-chrome
+          CHROME_FLAGS: --no-sandbox
+        run: bash tools/smoke.sh

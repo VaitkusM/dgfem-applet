@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>12. Parallelisation on GPUs — Fluxes, DG &amp; friends</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%232c5fb3'/%3E%3Cpath d='M5 22 L15 12 M17 20 L27 8' stroke='%23fff' stroke-width='3.2' stroke-linecap='round'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="../css/style.css">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
@@ -20,7 +21,7 @@
   table.data.kernels td, table.data.kernels th { text-align: left; }
 </style>
 </head>
-<body data-chapter="12">
+<body data-chapter="12" data-min-checks="8">
 <main class="content">
 
 <h1><span class="chapnum">12</span>Parallelisation on GPUs</h1>
@@ -204,7 +205,9 @@ bitwise reproducible (floating-point addition is not associative).</p>
 <figcaption><b>A race condition, made visible.</b> Every element adds $+1$ to each of its four vertices, so the correct result at a vertex is the number of
 elements sharing it (1, 2 or 4). <em>Naive parallel</em>: all element-threads load, then all store — interior vertices end with 1 instead of 4.
 <em>Colouring</em>: four launches, one per colour; same-coloured elements share no vertex, so nothing is lost. <em>DG face buffer</em>: a face kernel writes
-one value per face into its own slot, then each element gathers its faces (here: net outflow $\sum \pm F_f$) — no shared writes at all. Step through the
+one value per face into its own slot, then each element gathers its faces (here: net outflow $\sum \pm F_f$) — no shared writes at all.
+<em>DG scatter</em> is the tempting shortcut that the face buffer avoids: every face-thread adds $+F_f$ to one neighbour and $-F_f$ to the other at the same
+time, and updates are lost just as in the naive vertex case (the element sums are wrong and no longer add up to zero). Step through the
 phases with play.</figcaption>
 </figure>
 
@@ -223,8 +226,13 @@ $M = \tfrac{h^2}{4}\operatorname{diag}(w_i w_j)$. (This "lumped" GLL mass matrix
 $2p-1$ — but it is the standard, accurate DG-SEM choice.) The <span class="term" data-g="upwind">upwind</span> flux through a face with normal $\mathbf n$ pointing
 from $K^-$ to $K^+$ is</p>
 $$\hat F(u^-, u^+) = \begin{cases} (\mathbf a\cdot\mathbf n)\,u^- & \mathbf a\cdot\mathbf n \ge 0,\\ (\mathbf a\cdot\mathbf n)\,u^+ & \mathbf a\cdot\mathbf n &lt; 0.\end{cases}$$
-<p>Write $u_{ij}$ for the value at node $(\xi_i, \xi_j)$ of an element. Because the GLL differentiation matrix satisfies a discrete integration-by-parts
-(summation-by-parts) identity, the weak form of chapter 6 can be rewritten exactly in <em>strong form</em>:</p>
+<p>Write $u_{ij}$ for the value at node $(\xi_i, \xi_j)$ of an element. The weak form of chapter 6 moves the derivative onto the test function; with collocated GLL quadrature its volume term for the 1D test function
+$\ell_i$ is $\sum_k w_k\,\ell_i'(\xi_k)\,u_k = (D^{\mathsf T} W u)_i$ with $W = \operatorname{diag}(w_0,\dots,w_p)$. Now $\int_{-1}^{1} (\ell_i\ell_k)'\,\mathrm d\xi = \ell_i\ell_k\big|_{-1}^{1}$,
+and GLL quadrature integrates the polynomial $(\ell_i\ell_k)'$ of degree $2p-1$ exactly, which gives the <b>summation-by-parts</b> (SBP) identity — integration by parts for matrices:</p>
+$$W D + D^{\mathsf T} W = B, \qquad B = \operatorname{diag}(-1, 0, \dots, 0, 1).$$
+<p>Hence $D^{\mathsf T} W u = B u - W D u$: the weak volume term equals the <em>strong</em> one ($-WDu$, the derivative acting on $u$) plus the boundary values $Bu$,
+which combine with the numerical flux. (The test suite checks the identity for $p = 1,\dots,8$ and that the strong-form kernels reproduce a naive weak-form
+implementation to round-off.) So the weak form can be rewritten exactly in <em>strong form</em>:</p>
 $$\begin{aligned}
 \frac{\mathrm d u_{ij}}{\mathrm dt} \;=\; &-\frac{2}{h}\Big(a_x\sum_{k=0}^{p} D_{ik}\,u_{kj} \;+\; a_y\sum_{k=0}^{p} D_{jk}\,u_{ik}\Big) &&\text{(volume kernel)}\\
 &-\frac{2}{h\,w_0}\sum_{\text{faces } f \ni (i,j)} \Big(\hat F_f^{\text{out}} - (\mathbf a\cdot\mathbf n_K)\,u_{ij}\Big) &&\text{(lift kernel)}.
@@ -250,7 +258,8 @@ element (its left or lower neighbour $K^-$), so the face kernel writes every slo
 <tr><td><code>lift</code></td><td>one per DOF</td><td>$u$, $r$, face slots</td><td>$r[g]$</td><td>adds the face terms (boundary DOFs only: divergent)</td></tr>
 <tr><td><code>rkStage</code></td><td>one per DOF</td><td>$u^{\text{in}}$, $r$, $k$</td><td>$k$, $u^{\text{out}}$</td><td>LSRK stage; ping-pong $u^{\text{in}} \to u^{\text{out}}$</td></tr>
 </table>
-<p>Here is the complete volume kernel (generated for each $p$, with the matrix $D$ baked in as constants so the compiler can unroll the loop):</p>
+<p>Here is the complete volume kernel (generated for each $p$: the loop bound <code>NP1</code> is a compile-time constant and the entries of $D$ are written
+into the shader source as the initialiser of a module-scope array, so the compiler can unroll the loop):</p>
 <pre class="code" id="wgsl-volume"></pre>
 <p>The file <code>lib/gpu/cputwin.js</code> contains the same four kernels as plain JavaScript loops in f64 ("the loop body is one GPU thread"), with identical
 indexing. It is tested against an independent, naive weak-form implementation, reproduces $-\mathbf a\cdot\nabla u$ exactly for polynomial data of degree $\le p$,
@@ -280,8 +289,10 @@ simple kernels that mirror the mathematics.</p>
 <p>The widget below compiles the four WGSL kernels for your choice of $p$, uploads the initial condition once, and then records many time steps into a single
 command buffer (20 dispatches per step). The GPU works through them without any CPU involvement; we wait for completion with
 <code>queue.onSubmittedWorkDone()</code> to measure the time of a batch, and read the solution back only once per animation frame to draw it.
-"Verify" runs the same number of steps on the f64 CPU twin and reports the largest pointwise difference. If your browser has no WebGPU, the widget
-runs the CPU twin alone and says so.</p>
+"Verify" starts again from the initial condition, runs the same number of steps on the GPU and on the f64 CPU twin and reports the largest pointwise difference;
+"Benchmark" times both. They work on a second, scratch copy of the solver (same compiled kernels, separate buffers), so the simulation you are watching is not disturbed —
+it starts at $t = 0$ and only "Run" advances it. If your browser has no WebGPU, or the GPU device is lost while the page is open (driver reset, laptop switching GPUs),
+the widget carries on with the CPU twin alone and says so.</p>
 
 <figure class="widget" id="w-live">
 <figcaption><b>Live WebGPU DG-SEM advection</b> of a periodic field with velocity $\mathbf a = (1, 0.5)$ (after time 2 the exact solution is back at its start).
@@ -292,12 +303,18 @@ Steps/s and DOF-updates/s (= DOFs × steps/s, each step being 5 RK stages) are m
 <div class="box try">
 <span class="box-title">Try this</span>
 <ul>
-<li>Increase $N$ at fixed $p$. The GPU's DOF-updates/s grows with the problem size until the GPU is full; small problems cannot hide latency (and launch overhead dominates).
-The CPU's rate stays roughly constant.</li>
+<li>Increase $N$ at fixed $p$ and press <em>Benchmark</em>. The GPU's DOF-updates/s grows with the problem size as long as the GPU is not yet full: small problems
+cannot hide latency (and launch overhead dominates). Beyond that it levels off, and on some machines it drops again for the largest meshes
+(on the laptop GPU this page was developed on, at $p=3$: about 40, 140, 390, 680, 650 and 420 million DOF-updates/s for $N = 8,\dots,256$ — yours will differ).
+The CPU's rate stays roughly constant (about 10 million there).</li>
 <li>Press <em>Verify</em> for $p = 1, 2, 3$. The GPU (f32) and CPU (f64) results differ by roughly the f32 round-off times the solution size, accumulated over the steps — not by
 discretisation error, because both run the identical discrete algorithm.</li>
 <li>In the roofline widget, switch the device preset and see the measured star (from your machine) next to the model's predictions.</li>
-<li>In the thread widget, set $p = 1$: every DOF of a $2\times 2$-node element lies on the boundary, so the lift kernel no longer diverges. At $p = 3$, 4 of 16 DOFs are interior.</li>
+<li>In the thread widget, step through the <em>lift</em> kernel for $p = 1, 2, 3$ (toy warps, $W = 8$). At $p = 1$ every DOF is a corner of its
+$2\times2$-node element and takes exactly two of the four <code>if</code> branches — so on each of those lines half of the lanes are masked: divergence does
+<em>not</em> disappear (SIMT efficiency 64&nbsp;%). At $p = 3$ only 12 of the 16 DOFs of an element lie on its boundary, yet the efficiency is slightly
+<em>higher</em> (67&nbsp;%): a warp of 8 threads holds exactly two rows of an element, and a warp whose rows touch neither the top nor the bottom face skips
+those two <code>if</code>s entirely. What divergence costs depends on how the branch outcomes line up with the warps, not only on how many threads take a branch.</li>
 </ul>
 </div>
 
@@ -305,7 +322,8 @@ discretisation error, because both run the identical discrete algorithm.</li>
 <p>GPUs are fastest in f32; consumer GPUs run f64 at only a small fraction of the f32 rate, and WebGPU offers no f64 at all. Is f32 accurate enough? Each operation
 has a relative rounding error of at most $2^{-24}\approx 6\cdot10^{-8}$. In an explicit scheme these errors are not amplified (the scheme is stable), they merely accumulate
 slowly, so after hundreds of steps we expect differences from the f64 twin of order $10^{-7}$ to $10^{-6}$ relative to the solution — which is what the widget shows
-(our tests require less than $2\cdot10^{-5}$ after 100 steps). This is far below the discretisation error of practical meshes
+(our GPU tests require less than $2\cdot10^{-5}$ after 100 steps; they need a WebGPU browser, so they run in <a href="../tests/test.html">the browser test page</a> and in the
+GPU smoke test, while the headless Deno run reports them as skipped). This is far below the discretisation error of practical meshes
 (at $p=3$ on a $32\times32$ mesh the $L^2$ error of the smooth test problem $\sin 2\pi x\,\sin 2\pi y$ at time $0.25$ is already below $10^{-6}$, and it decreases like $h^4$), so f32 suffices for this explicit
 hyperbolic problem. It becomes inadequate when one needs errors near $10^{-7}$ relative, for long-time statistics with drifting invariants, or for
 ill-conditioned implicit solves (the conditioning of elliptic matrices grows like $h^{-2}$ and eats digits); mixed precision (f32 work, f64 accumulation or residuals)
@@ -325,6 +343,8 @@ or atomics.</li>
 <li><b>Reading and writing the same buffer in one kernel</b> when threads read neighbours' values: some threads see old, some new values. Use ping-pong buffers.</li>
 <li><b>Uniform buffer layout.</b> WGSL structs have alignment rules (e.g. a <code>vec3&lt;f32&gt;</code> is aligned to 16 bytes, uniform buffer offsets must be multiples of 256 bytes
 on many devices). Mismatched offsets between the JavaScript <code>ArrayBuffer</code> and the WGSL struct give garbage constants without any error.</li>
+<li><b>Assuming the device lives forever.</b> A WebGPU device can be <em>lost</em> at any time (driver update, GPU process crash, a laptop switching GPUs). All
+its buffers are gone and pending <code>mapAsync</code> calls reject; a robust application listens to <code>device.lost</code> and falls back or rebuilds — as the widget above does.</li>
 <li><b>Timing the wrong thing.</b> <code>queue.submit()</code> returns immediately; the GPU runs asynchronously. Measure from submission to
 <code>onSubmittedWorkDone()</code> over a batch long enough that the fixed overhead is negligible.</li>
 </ul>
