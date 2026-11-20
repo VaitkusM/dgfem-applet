@@ -649,8 +649,11 @@ function liveWidget(fig) {
     // CPU twin: as many steps as fit in the time budget (at least one), on a scratch copy
     const c = makeCpuSolver(disc, field);
     let n = 0; const t0 = performance.now();
-    do { c.step(dt); n++; } while (performance.now() - t0 < (quick ? 60 : 150));
-    st.cpuRate = n / ((performance.now() - t0) / 1000);
+    // The step cap matters: if the clock does not advance (headless Chrome with a paused virtual clock) a loop
+    // bounded only by performance.now() would never end.
+    do { c.step(dt); n++; } while (n < 5000 && performance.now() - t0 < (quick ? 60 : 150));
+    const elapsed = performance.now() - t0;
+    st.cpuRate = elapsed > 0 ? n / (elapsed / 1000) : NaN;
     if (gpu) {
       const s = await scratchSolver();
       await s.run(2); // warm-up
@@ -682,7 +685,7 @@ function liveWidget(fig) {
       } else {
         const t0 = performance.now(); let n = 0;
         do { cpu.step(dt); n++; } while (n < st.batch && performance.now() - t0 < 30);
-        st.cpuRate = n / ((performance.now() - t0) / 1000);
+        { const el = performance.now() - t0; if (el > 0) st.cpuRate = n / (el / 1000); }
         field = cpu.u();
       }
       let finite = true; for (let g = 0; g < field.length; g += 97) if (!Number.isFinite(field[g])) { finite = false; break; }

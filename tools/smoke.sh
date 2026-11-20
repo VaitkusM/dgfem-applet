@@ -88,7 +88,7 @@ verdict() { sed -n 's/.*<pre id="selftest-result"[^>]*>\(.*\)<\/pre>.*/\1/p' | h
 pages="index.html"
 for f in chapters/*.html; do pages="$pages $f"; done
 for f in $pages; do
-  out=$(dump "$BASE/$f?selftest=1" 15000 | verdict)
+  out=$(dump "$BASE/$f?selftest=1&nogpu=1" 15000 | verdict)   # nogpu: see lib/gpu/device.js (the GPU path is covered by --gpu)
   if echo "$out" | grep -q '"ok":true'; then echo "ok    $f"; else echo "FAIL  $f  ${out:-(no self-test verdict: the page script did not run to the end)}"; fail=1; fi
 done
 
