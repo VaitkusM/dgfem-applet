@@ -9,7 +9,7 @@
  *  - w-riemann : the Burgers Riemann problem: shock vs rarefaction, Rankine–Hugoniot speed
  */
 import { initChapter, mount, selfCheck } from '../../lib/ui/chapter.js';
-import { widgetLayout, slider, select, button, buttonRow, readout, fmt } from '../../lib/ui/controls.js';
+import { widgetLayout, slider, select, button, buttonRow, readout, fmt, playControls } from '../../lib/ui/controls.js';
 import { createCanvas, View2D, theme, onPointer, arrow, seriesColors } from '../../lib/viz/canvas.js';
 import { drawFunction } from '../../lib/viz/field2d.js';
 import { colorOf } from '../../lib/viz/colormap.js';
@@ -20,15 +20,6 @@ import { burgers, burgersRiemann } from '../../lib/core/models/scalar.js';
 import { advDiffGaussian, burgersBreakingTime, burgersRiemannKind } from '../../lib/core/verify/closedforms.js';
 import { makeFV1D, cellAverages } from '../../lib/core/fv/fv1d.js';
 import { makeStepper } from '../../lib/core/time/rk.js';
-
-/** Play/pause + reset buttons wired to an Animator. */
-function playControls(parent, anim, onReset) {
-  const row = buttonRow(parent);
-  const play = button(row, { label: '▶ Play', primary: true, onClick: () => anim.toggle() });
-  button(row, { label: '↺ Reset', onClick: onReset });
-  anim.o.onState = (r) => play.setLabel(r ? '❚❚ Pause' : '▶ Play');
-  return play;
-}
 
 /* ------------------------------------------------------------------ */
 /* W1: advection–diffusion flux decomposition                           */

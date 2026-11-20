@@ -20,6 +20,7 @@ index.html                   landing page (cards generated from lib/ui/chapters.
 chapters/NN-name.html        one page per chapter: prose + <figure class="widget" id="w-…">
 chapters/a-verification.html appendix: verification (runs the test suite in the browser) + glossary
 chapters/js/chNN.js          widget wiring for that chapter (imports lib/…); cha.js for the appendix
+chapters/js/ellipticcommon.js  manufactured problems shared by the chapter 8 and 9 widgets
 css/style.css                all styling; colours are CSS variables (dark mode aware, WCAG AA contrast)
 lib/core/                    numerics (pure functions, DOM-free)
   basis/  quad/  la/  mesh/  time/  models/  fv/  dg/  fr/  elliptic/  immersed/  dd/  verify/
