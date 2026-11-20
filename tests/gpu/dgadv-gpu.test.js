@@ -5,8 +5,8 @@
  */
 import { test, assert } from '../harness.js';
 import { getGPU } from '../../lib/gpu/device.js';
-import { createGpuSolver, maxAbsDiff } from '../../lib/gpu/dgAdvGPU.js';
-import { makeDGAdv2D, makeCpuSolver, INITIAL } from '../../lib/gpu/cpuTwin.js';
+import { createGpuSolver, maxAbsDiff } from '../../lib/gpu/dgadvgpu.js';
+import { makeDGAdv2D, makeCpuSolver, INITIAL } from '../../lib/gpu/cputwin.js';
 
 /** Results of the last run, for scratch pages that want to print details. */
 export const GPU_TEST_LOG = [];

@@ -3,7 +3,7 @@
  * L2 error vs the exact translated solution decays like h^{p+1}.
  */
 import { test, assert, assertRate } from '../harness.js';
-import { makeDGAdv2D, makeCpuSolver, INITIAL, translated } from '../../lib/gpu/cpuTwin.js';
+import { makeDGAdv2D, makeCpuSolver, INITIAL, translated } from '../../lib/gpu/cputwin.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 
 test('DG-SEM advection (CPU twin): L2 error rate p+1, p = 1..3', () => {

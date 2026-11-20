@@ -4,8 +4,8 @@
  */
 import { test, assert, assertRate } from '../harness.js';
 import { triGrid } from '../../lib/core/mesh/structured.js';
-import { solveMixedRT0, rt0Errors, rt0ConservationResidual, rt0Local, rt0Eval } from '../../lib/core/elliptic/mixedRT0.js';
-import { solveHybridRT0, solveHybridRT0Monolithic, edgeMeans } from '../../lib/core/elliptic/hybridRT0.js';
+import { solveMixedRT0, rt0Errors, rt0ConservationResidual, rt0Local, rt0Eval } from '../../lib/core/elliptic/mixedrt0.js';
+import { solveHybridRT0, solveHybridRT0Monolithic, edgeMeans } from '../../lib/core/elliptic/hybridrt0.js';
 import { solveHDG, solveHDGMonolithic, hdgErrors } from '../../lib/core/elliptic/hdg.js';
 import { POISSON_MMS } from '../../lib/core/verify/mms.js';
 import { fitRate } from '../../lib/core/verify/rates.js';

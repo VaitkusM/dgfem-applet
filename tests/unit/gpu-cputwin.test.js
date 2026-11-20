@@ -1,9 +1,9 @@
 /**
- * Tests for lib/gpu/cpuTwin.js — the f64 reference implementation of the
+ * Tests for lib/gpu/cputwin.js — the f64 reference implementation of the
  * WebGPU DG-SEM advection solver (chapter 12).
  */
 import { test, assert, assertClose } from '../harness.js';
-import { makeDGAdv2D, makeCpuSolver, LSRK4, CFL_SAFE, INITIAL } from '../../lib/gpu/cpuTwin.js';
+import { makeDGAdv2D, makeCpuSolver, LSRK4, CFL_SAFE, INITIAL } from '../../lib/gpu/cputwin.js';
 import { makeStepper, stabilityAmp } from '../../lib/core/time/rk.js';
 import { lagrangeValues, lagrangeDerivs } from '../../lib/core/basis/lagrange.js';
 import { eigGeneral } from '../../lib/core/la/dense.js';

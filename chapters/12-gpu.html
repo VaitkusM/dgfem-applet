@@ -252,7 +252,7 @@ element (its left or lower neighbour $K^-$), so the face kernel writes every slo
 </table>
 <p>Here is the complete volume kernel (generated for each $p$, with the matrix $D$ baked in as constants so the compiler can unroll the loop):</p>
 <pre class="code" id="wgsl-volume"></pre>
-<p>The file <code>lib/gpu/cpuTwin.js</code> contains the same four kernels as plain JavaScript loops in f64 ("the loop body is one GPU thread"), with identical
+<p>The file <code>lib/gpu/cputwin.js</code> contains the same four kernels as plain JavaScript loops in f64 ("the loop body is one GPU thread"), with identical
 indexing. It is tested against an independent, naive weak-form implementation, reproduces $-\mathbf a\cdot\nabla u$ exactly for polynomial data of degree $\le p$,
 conserves $\int u$ to round-off, never increases the discrete energy, and converges at the optimal rate $p+1$ in $L^2$. The GPU result is then validated against the twin.</p>
 

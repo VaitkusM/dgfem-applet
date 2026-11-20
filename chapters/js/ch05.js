@@ -25,7 +25,7 @@ import {
 import { makeStepper } from '../../lib/core/time/rk.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 import { EULER_FLUXES, primToCons, physFlux } from '../../lib/core/models/euler.js';
-import { exactRiemann } from '../../lib/core/models/eulerRiemann.js';
+import { exactRiemann } from '../../lib/core/models/eulerriemann.js';
 import { makeEuler1D, eulerCellAverages, eulerStats, SHOCK_TUBES } from '../../lib/core/fv/euler1d.js';
 import { makeFV2D, cellAverages2D, zalesakDisk, rotationVelocity, rotated } from '../../lib/core/fv/fv2d.js';
 

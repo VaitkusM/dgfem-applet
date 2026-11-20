@@ -1,5 +1,5 @@
 import { test, assert, assertClose, assertRate } from '../harness.js';
-import { exactRiemann } from '../../lib/core/models/eulerRiemann.js';
+import { exactRiemann } from '../../lib/core/models/eulerriemann.js';
 import { EULER_FLUXES, physFlux, primToCons, consToPrim } from '../../lib/core/models/euler.js';
 import { makeEuler1D, eulerCellAverages, eulerStats, SHOCK_TUBES } from '../../lib/core/fv/euler1d.js';
 import { makeStepper } from '../../lib/core/time/rk.js';

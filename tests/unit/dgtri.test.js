@@ -9,7 +9,7 @@ import { triGeometry, mapPoint, brokenEvaluator, l2Project, brokenErrors, basisT
 import { systemSizes } from '../../lib/core/elliptic/dofcount.js';
 import { solvePoissonCG } from '../../lib/core/elliptic/cg.js';
 import { assembleIP } from '../../lib/core/elliptic/sipg.js';
-import { solveHybridRT0 } from '../../lib/core/elliptic/hybridRT0.js';
+import { solveHybridRT0 } from '../../lib/core/elliptic/hybridrt0.js';
 import { solveHDG } from '../../lib/core/elliptic/hdg.js';
 import { nnz } from '../../lib/core/la/sparse.js';
 import { symEig } from '../../lib/core/la/dense.js';

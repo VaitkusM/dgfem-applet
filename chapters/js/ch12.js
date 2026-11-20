@@ -6,7 +6,7 @@
  *  - w-roofline : roofline model with the DG kernels' arithmetic intensities (lib/gpu/cost.js) + measured point
  *  - w-layout   : AoS vs SoA vs per-element mapping: addresses read by one warp, memory transactions
  *  - w-race     : scatter-add race (wrong result), colouring (4 launches), DG face buffer + gather
- *  - w-live     : live WebGPU DG-SEM advection (lib/gpu/dgAdvGPU.js) vs the f64 CPU twin, with CPU fallback
+ *  - w-live     : live WebGPU DG-SEM advection (lib/gpu/dgadvgpu.js) vs the f64 CPU twin, with CPU fallback
  * Static content filled by script: the generated WGSL volume kernel (#wgsl-volume) and the
  * sum-factorisation cost table (#sumfact-table).
  */
@@ -20,12 +20,12 @@ import { Animator } from '../../lib/viz/anim.js';
 import { gaussLobatto } from '../../lib/core/quad/gauss1d.js';
 import { baryWeights } from '../../lib/core/basis/lagrange.js';
 import { quadGrid } from '../../lib/core/mesh/structured.js';
-import { makeDGAdv2D, makeCpuSolver, INITIAL } from '../../lib/gpu/cpuTwin.js';
+import { makeDGAdv2D, makeCpuSolver, INITIAL } from '../../lib/gpu/cputwin.js';
 import { makeKernelSources } from '../../lib/gpu/kernels.js';
 import { kernelCosts, stageTotals, derivativeFlops, roofline, transactions, warpAddresses } from '../../lib/gpu/cost.js';
 import { lockstepScatter, colorElements, isValidColoring, gridFaces, faceBufferGather } from '../../lib/gpu/races.js';
 import { getGPU } from '../../lib/gpu/device.js';
-import { createGpuSolver, maxAbsDiff } from '../../lib/gpu/dgAdvGPU.js';
+import { createGpuSolver, maxAbsDiff } from '../../lib/gpu/dgadvgpu.js';
 
 /** Play/pause + reset buttons wired to an Animator. */
 function playControls(parent, anim, onReset) {
