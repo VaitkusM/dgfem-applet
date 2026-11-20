@@ -74,3 +74,23 @@ test('Imaginary-axis stability limits: SSPRK3 up to √3, RK4 up to 2√2, SSPRK
   assert(ok('rk4', 2 * Math.SQRT2 - 1e-6) && !ok('rk4', 2 * Math.SQRT2 + 1e-3), 'rk4');
   assert(!ok('ssprk2', 0.01) && !ok('fe', 0.01), 'ssprk2/fe');
 });
+
+/* ---- added by the chapter 6/7 audit ---- */
+import { dgStableCFL, containsImaginaryAxis, CFL_SAFETY } from '../../lib/core/dg/spectrum.js';
+
+test('dgStableCFL reproduces the table of chapter 6 and shows that 1/(2p+1) is only a rule of thumb', () => {
+  const tab = [[0, 'fe', 1], [0, 'ssprk3', 1.256], [1, 'ssprk2', 1 / 3], [1, 'ssprk3', 0.409], [2, 'ssprk3', 0.209], [3, 'ssprk3', 0.130], [3, 'rk4', 0.145]];
+  for (const [p, method, nu] of tab) assertClose(dgStableCFL(p, { method }), nu, 2e-3, 0, `p=${p} ${method}`);
+  // ν_max (2p+1) for SSP-RK3, p = 1..5 (quoted in spectrum.js): 1.23, 1.05, 0.91, 0.81, 0.73
+  const prod = [1.23, 1.05, 0.91, 0.81, 0.73];
+  for (let p = 1; p <= 5; p++) assertClose(dgStableCFL(p) * (2 * p + 1), prod[p - 1], 6e-3, 0, `p=${p}`);
+  // every variant used by the widgets has a positive limit, and the safety factor is below 1
+  for (const flux of ['upwind', 'central']) for (const quad of ['exact', 'collocated']) for (let p = 0; p <= 5; p++) assert(dgStableCFL(p, { flux, quad }) > 0.05, `${flux} ${quad} p=${p}`);
+  assert(CFL_SAFETY > 0 && CFL_SAFETY < 1, 'safety factor');
+  assert(dgStableCFL(2, { method: 'fe' }) < 1e-3, 'forward Euler p = 2');
+});
+
+test('containsImaginaryAxis: true for SSP-RK3, RK4, LSRK4; false for forward Euler and SSP-RK2', () => {
+  for (const m of ['ssprk3', 'rk4', 'lsrk4']) assert(containsImaginaryAxis(m), m);
+  for (const m of ['fe', 'ssprk2']) assert(!containsImaginaryAxis(m), m);
+});

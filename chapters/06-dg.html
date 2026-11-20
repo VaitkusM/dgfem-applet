@@ -46,7 +46,8 @@ works on any mesh, and keeps all heavy work inside the cells (which is why it lo
 <tr><td>$\jump{u} = u^- - u^+$, $\avg{u} = \frac12(u^-+u^+)$</td><td><span class="term" data-g="jump">jump</span> and <span class="term" data-g="average">average</span> (AGENTS.md convention)</td></tr>
 <tr><td>$\hat F(u^-,u^+)$</td><td>numerical flux through a face, = flux <em>out of</em> $K^-$</td></tr>
 <tr><td>$M, S, D$</td><td>reference <span class="term" data-g="massmat">mass</span>, stiffness and differentiation matrices</td></tr>
-<tr><td>$\nu = |a|\Delta t/h$</td><td>CFL number (with the <em>element</em> width $h$)</td></tr>
+<tr><td>$\nu = |a|\Delta t/h$, $\nu_{\max}$</td><td>CFL number (with the <em>element</em> width $h$) and its largest stable value</td></tr>
+<tr><td>$\mathbf U = (\rho, \rho u, E)$, $\mathbf F(\mathbf U)$</td><td>conserved variables and flux of the Euler equations (chapter 5), section <a href="#systems">Systems</a></td></tr>
 </table>
 </div>
 
@@ -89,7 +90,12 @@ $$\int_{K_k} \partial_t u_h\, v \dd x \;=\; \underbrace{\int_{K_k} f(u_h)\, v_x 
 <li><b>upwind</b> (advection, $f = au$): $\hat F = a\avg{u} + \frac{|a|}2\jump{u}$, which equals $a u^-$ for $a > 0$ and $a u^+$ for $a&lt;0$;</li>
 <li><b>central</b>: $\hat F = \avg{f(u)}$ — no upwinding at all;</li>
 <li><b>Rusanov / local Lax–Friedrichs</b>: $\hat F = \avg{f(u)} + \frac{\alpha}{2}\jump{u}$ with $\alpha = \max(|f'(u^-)|, |f'(u^+)|)$ (for advection it equals upwind).</li>
+<li><b>Godunov</b> (nonlinear $f$): the flux of the exact solution of the Riemann problem with states $u^-, u^+$ (chapter 5) — the proper generalisation of "upwind".
+For advection it <em>is</em> the upwind flux.</li>
 </ul>
+<p>For a nonlinear flux such as Burgers', "take the value the wind comes from" is ambiguous when $f'(u^-)$ and $f'(u^+)$ have different signs. Deciding by the sign of
+an averaged speed (Roe's flux without entropy fix, chapter 5) keeps unphysical expansion shocks — in our test a jump from $-1$ to $+1$ stays frozen instead of opening into
+a rarefaction fan. The playground below therefore offers only Godunov and Rusanov for Burgers' equation.</p>
 
 <h3>Conservation for free</h3>
 <p>The constant $v = 1$ is an allowed test function. Then $v_x = 0$ and the scheme says</p>
@@ -98,11 +104,22 @@ $$\frac{\mathrm d}{\mathrm dt}\int_{K_k} u_h \dd x = -\big(\hat F_{k+\frac12} - 
 telescopes: the total mass $\int u_h\,\mathrm dx$ is conserved to round-off, for any $p$, any flux, linear or nonlinear. And for $p = 0$ the volume term vanishes
 completely: <b>DG with $p = 0$ is the first-order finite volume method.</b></p>
 
+<h3>Weak form and strong form</h3>
+<p>The box above is called the <b>weak form</b> of DG: the derivative sits on the test function. Integrating its volume term by parts <em>once more</em>
+(now with the element's own polynomial flux, so the boundary terms are the <em>interior</em> face values $f(u_h)$) moves the derivative back onto the flux:</p>
+$$\int_{K_k} \partial_t u_h\, v \dd x \;=\; -\int_{K_k} \partial_x f(u_h)\, v \dd x \;-\; \Big(\hat F_{k+\frac12} - f\big(u^-_{k+\frac12}\big)\Big)\, v(x^-_{k+\frac12}) \;+\; \Big(\hat F_{k-\frac12} - f\big(u^+_{k-\frac12}\big)\Big)\, v(x^+_{k-\frac12}) .$$
+<p>This is the <b><span class="term" data-g="strongdg">strong form</span></b> of DG. It reads: "the PDE residual $\partial_t u_h + \partial_x f(u_h)$ inside the element, plus a penalty at each face for the mismatch between the common
+flux $\hat F$ and the element's own flux". Here $u^-_{k+\frac12}$ and $u^+_{k-\frac12}$ are the element's own values at its right and left end. If all integrals are computed exactly the two forms are
+the same method (our tests compare their right-hand sides for linear advection to round-off); they differ in how quadrature errors enter, and the strong form is the one that
+chapter 7 (flux reconstruction) reproduces. Turning a face quantity into a polynomial on the element — "find $r \in P_p$ with $\int_{K_k} r\,v = \big(\hat F - f(u_h)\big) v$ at the face, for all $v$" —
+is called <b>lifting</b>; in matrix form it is the multiplication of the face term by $M^{-1}$ that appears below.</p>
+
 <figure class="widget" id="w-dg1d">
 <figcaption><b>DG playground.</b> Each element carries its own polynomial (coloured curves; dots = nodes). Dashed: the exact solution (for Burgers:
-a fine finite volume reference). Choose the degree $p$, the number of elements $N$, the flux, the initial data and the limiter, then press play
-(SSP-RK3 time stepping, $\Delta t = \text{CFL}\cdot h/(\max|f'|\,(2p+1))$). The readout tracks the mass (conserved to round-off), the energy $\tfrac12\|u_h\|^2$
-and, for advection, the $L^2$ error.</figcaption>
+a fine finite volume reference). Choose the degree $p$, the number of elements $N$, the flux, the initial data and the limiter, then press play.
+Time stepping is SSP-RK3 with $\Delta t = \theta\,\Delta t_{\max}$, $\Delta t_{\max} = \nu_{\max}\,h/\max|f'(u_h)|$, where $\nu_{\max}$ is the largest stable CFL number of the
+chosen degree, flux and mass matrix (computed from the spectrum, see <a href="#cfl">below</a>) and $\theta$ is the slider "time step" (default $0.8$; values above $1$ are unstable on purpose).
+The readout tracks the mass (conserved to round-off), the energy $\tfrac12\|u_h\|^2$ and, for advection, the $L^2$ error. If the solution leaves the range $|u| \le 10^3$ the run stops and the readout says why.</figcaption>
 </figure>
 
 <div class="box try">
@@ -113,6 +130,8 @@ and, for advection, the $L^2$ error.</figcaption>
 <li>Square wave with $p = 3$, no limiter: overshoots and undershoots next to the jumps (Gibbs). Switch on the minmod limiter: monotone, but the corners round off.</li>
 <li>Switch to the <em>central</em> flux: the semi-discrete scheme conserves the energy, so it decays only slightly (through the damping of
 the RK method), and the wiggles spread over the whole domain.</li>
+<li>Burgers, square wave, $p = 4$, $N = 16$, no limiter: with exact quadrature the solution oscillates but stays bounded; switch to GLL collocation and it blows up
+(the run stops with a message) — this is the aliasing instability explained <a href="#quadrature">below</a>. Lowering the time step does not help; a limiter does.</li>
 </ul>
 </div>
 
@@ -140,11 +159,11 @@ D = \begin{pmatrix}-\tfrac12 & \tfrac12\\[2pt] -\tfrac12 & \tfrac12\end{pmatrix}
 <p>where $D_{ij} = \ell_j'(\xi_i)$ is the <b>differentiation matrix</b> (nodal values of $u$ ↦ nodal values of $u_\xi$). Note $S + S^{\mathsf T} = \mathrm{diag}(-1, 1)$:
 this is integration by parts, $\int (\phi_i\phi_j)' = [\phi_i\phi_j]_{-1}^{1}$, in matrix form. In general
 $S + S^{\mathsf T} = \boldsymbol\phi(1)\boldsymbol\phi(1)^{\mathsf T} - \boldsymbol\phi(-1)\boldsymbol\phi(-1)^{\mathsf T}$, which for GLL nodes and any $p$ is
-$\mathrm{diag}(-1, 0, \dots, 0, 1)$. This <b>summation-by-parts</b> property is the discrete reason why DG is stable.</p>
+$\mathrm{diag}(-1, 0, \dots, 0, 1)$. This <b><span class="term" data-g="sbp">summation-by-parts</span></b> property is the discrete reason why DG is stable.</p>
 
 <figure class="widget" id="w-basis">
-<figcaption><b>Basis explorer.</b> Left: the $p+1$ basis functions on the reference element. Right: the exact mass matrix $M$ and, for nodal bases, the
-<em>lumped</em> (GLL-quadrature) mass matrix and the differentiation matrix. Legendre gives a diagonal $M$ with entries $2/(2j+1)$; GLL Lagrange gives a full $M$ that
+<figcaption><b>Basis explorer.</b> Left: the $p+1$ basis functions on the reference element. Right: the exact mass matrix $M$, then for nodal bases the
+differentiation matrix $D$ (for GLL nodes also the <em>lumped</em>, GLL-quadrature mass matrix) and for the modal basis the stiffness matrix $S$. Legendre gives a diagonal $M$ with entries $2/(2j+1)$; GLL Lagrange gives a full $M$ that
 GLL quadrature replaces by its diagonal of weights; equispaced nodes give wildly oscillating basis functions for large $p$ (Runge's phenomenon).</figcaption>
 </figure>
 
@@ -154,17 +173,22 @@ GLL quadrature replaces by its diagonal of weights; equispaced nodes give wildly
 <li><b>Exact integration ("over-integration").</b> Use a Gauss rule with enough points: the mass matrix needs degree $2p$; the Burgers volume term
 $\int \tfrac12 u_h^2\,\ell_i'$ has degree $3p-1$. Our code uses $\lceil (3p+2)/2\rceil + 1$ Gauss points by default, enough for both.</li>
 <li><b>Collocation.</b> Use the $p+1$ solution nodes themselves as quadrature points. With GLL nodes this is the classical
-<b>DG spectral element method (DG-SEM)</b>. Then $M$ becomes diagonal, $M = \mathrm{diag}(w_0,\dots,w_p)$ — the <b>lumped</b> mass matrix — and the flux enters only
+<b><span class="term" data-g="dgsem">DG spectral element method (DG-SEM)</span></b>. Then $M$ becomes diagonal, $M = \mathrm{diag}(w_0,\dots,w_p)$ — the <b>lumped</b> mass matrix — and the flux enters only
 through its nodal values $f(u_{k,j})$. The price: GLL with $p+1$ points is exact only up to degree $2p-1$, so the lumped $M$ is <em>not</em> the exact Gram matrix
 (it has the same row sums, $\int\ell_i$, but differs entry by entry).</li>
 </ol>
 <p>For linear advection every volume integrand has degree $\le 2p-1$, so the <em>only</em> inexact ingredient of DG-SEM is the lumped mass matrix; both versions
-converge at the optimal rate $p+1$ (tested for $p = 1,\dots,4$). For a nonlinear flux collocation replaces $f(u_h)$ by its degree-$p$ interpolant: the
-part of $u_h^2$ of degree $p+1,\dots,2p$ is folded back onto low degrees. This is <b>aliasing</b> — the same phenomenon as sampling a signal below its
+converge at the optimal rate $p+1$ (tested for $p = 1,\dots,4$). Same rate does not mean same error, though: in our test (sine wave, one period, $N = 16$ and $32$) the lumped scheme's
+error is larger by a factor $2.1$–$2.7$ for $p = 2,3,4$ and by a factor $14$–$16$ for $p = 1$, where lumping is a poor idea. For a nonlinear flux collocation replaces $f(u_h)$ by its degree-$p$ interpolant: the
+part of $u_h^2$ of degree $p+1,\dots,2p$ is folded back onto low degrees. This is <b><span class="term" data-g="aliasing">aliasing</span></b> — the same phenomenon as sampling a signal below its
 Nyquist rate. Concretely: with the entropy-conservative flux $\hat F = \big((u^-)^2 + u^-u^+ + (u^+)^2\big)/6$ and exact integration, the semi-discrete Burgers
 energy $\frac12\|u_h\|^2$ is conserved exactly (take $v = u_h$: $\int \frac{u_h^2}2\,\partial_x u_h = [u_h^3/6]$, and the face terms cancel it); with GLL collocation
 the same flux produces a nonzero energy rate for generic, under-resolved data. Aliasing errors are harmless for well-resolved solutions but can
-destabilise under-resolved simulations; the cures are over-integration, filtering, or split forms.</p>
+destabilise under-resolved simulations. You can watch this in the playground: for Burgers' equation with the Godunov or Rusanov flux and <em>no</em> limiter, exact quadrature
+never blew up in our sweep of all degrees $p \le 5$, while GLL collocation does for many under-resolved settings (e.g. square wave, $p = 4$, $N = 16$). The cures are
+<b>over-integration</b> (more quadrature points, as in strategy 1), <b>filtering</b> (damping the highest Legendre coefficients $u_{k,j}$, $j$ close to $p$, after each step), or
+<b>split forms</b> (writing the volume term as an average of $\partial_x(u^2/2)$ and $u\,\partial_x u$, which are equal for smooth $u$ but not after collocation; the right average restores the
+energy argument — Gassner 2013).</p>
 
 <div class="box analogy">
 <span class="box-title">Graphics analogy</span>
@@ -203,8 +227,8 @@ $$\frac12\frac{\mathrm d}{\mathrm dt}\|u_h\|_{L^2}^2 = -\sum_{\text{faces}} \fra
 <b>Central</b> ($\lambda = 0$): the energy is exactly conserved.</p>
 </div>
 <p>The upwind flux damps exactly what DG cannot represent well — the jumps. The central flux is "stable" in the sense that the energy does not grow, but nothing
-damps the high-frequency garbage; its convergence is irregular (we observe at least order $p$, sometimes $p+1$, depending on $p$ and $N$), while upwind gives a clean
-$p+1$. The same argument works with GLL collocation, in the discrete norm $\mathbf u^{\mathsf T}M_{\text{lumped}}\mathbf u$, thanks to summation by parts. Our tests
+damps the high-frequency garbage; its convergence is irregular (refining uniform meshes from $N = 40$ to $80$ we measure order $p+1$ for $p = 1, 2, 4$, while for $p = 3$ the observed order
+wanders between about $2.9$ and $4.6$ depending on the data and on $N$), while upwind gives a clean $p+1$. The same argument works with GLL collocation, in the discrete norm $\mathbf u^{\mathsf T}M_{\text{lumped}}\mathbf u$, thanks to summation by parts. Our tests
 check the matrix version: the symmetric part of $(h/2)M L$ is negative semidefinite for upwind and zero for central.</p>
 
 <h2 id="cfl">Spectrum and the CFL condition</h2>
@@ -213,8 +237,11 @@ explicit time step is stable. One step of an RK method multiplies each eigen-com
 function</em> (a polynomial; e.g. $R(z) = 1 + z + z^2/2 + z^3/6$ for SSP-RK3). Stability requires $|R(\lambda\Delta t)| \le 1$ for every eigenvalue
 $\lambda$: the scaled spectrum $\lambda\Delta t$ must fit inside the stability region $\{z : |R(z)| \le 1\}$.</p>
 <p>The upwind eigenvalues lie in the left half plane (energy decreases), the central ones on the imaginary axis. Their size grows with $p$, so the
-time step must shrink, roughly like $h/(2p+1)$. Precisely, with the CFL number $\nu = |a|\Delta t/h$ (element width $h$), the largest stable values computed from the
-spectrum (Bloch analysis, $N \to \infty$) are:</p>
+time step must shrink, roughly like $h/(2p+1)$. To get numbers that do not depend on $N$ we use <b><span class="term" data-g="bloch">Bloch (Fourier) analysis</span></b>: on a uniform periodic mesh every element
+is coupled to its neighbours in the same way, so the eigenvectors are waves $\mathbf u_k = \hat{\mathbf u}\,e^{\mathrm i k\theta}$ (the same polynomial in every element, times a phase).
+Inserting this reduces the $N(p+1)$-dimensional eigenproblem to a $(p+1)\times(p+1)$ one for each phase shift $\theta$; a mesh with $N$ elements samples $\theta = 2\pi m/N$, and letting
+$\theta$ run through $[0, 2\pi)$ gives the spectrum for $N \to \infty$ (our tests check that both agree). With the CFL number $\nu = |a|\Delta t/h$ (element width $h$),
+the largest stable values computed this way are:</p>
 <table class="data">
 <tr><th>degree $p$</th><th>RK method</th><th>max stable $\nu$</th><th>remark</th></tr>
 <tr><td>0</td><td>forward Euler</td><td>1</td><td>first-order upwind FV</td></tr>
@@ -225,21 +252,25 @@ spectrum (Bloch analysis, $N \to \infty$) are:</p>
 <tr><td>3</td><td>SSP-RK3</td><td>0.130</td><td></td></tr>
 <tr><td>3</td><td>classical RK4</td><td>0.145</td><td></td></tr>
 </table>
-<p>For SSP-RK3 the product $\nu_{\max}\,(2p+1)$ stays between $0.7$ and $1.3$ for $p = 1,\dots,5$, hence the rule of thumb $\Delta t \approx h/(|a|(2p+1))$.
+<p>For SSP-RK3 the product $\nu_{\max}\,(2p+1)$ is $1.23,\ 1.05,\ 0.91,\ 0.81,\ 0.73$ for $p = 1,\dots,5$, hence the rule of thumb $\Delta t \approx h/(|a|(2p+1))$.
+It is only a rule of thumb: the product keeps decreasing, so a fixed "safety factor" tuned at low degree fails at high degree — $\Delta t = 0.8\,h/(|a|(2p+1))$ is stable for
+$p \le 4$ and blows up for $p = 5$ (tested). Robust codes, and all widgets of this chapter, take $\nu_{\max}$ from the spectrum instead.
 Forward Euler is useless for DG with $p\ge1$: part of the spectrum hugs the imaginary axis, where $|1+z| > 1$. The lumped (GLL) mass matrix gives a
 markedly larger stable time step (more than 1.5× for $p = 1,\dots,4$ in our tests) — one reason DG-SEM is popular.</p>
 
 <figure class="widget" id="w-spectrum">
 <figcaption><b>Spectrum and stability region.</b> Dots: eigenvalues of the DG operator for periodic advection on $N$ elements, multiplied by $\Delta t = \nu h/|a|$.
 Shaded: the stability region $|R(z)|\le 1$ of the chosen RK method. Increase the CFL number until some dots leave the region — they turn red and the scheme
-becomes unstable. The readout gives the largest stable $\nu$ for this $N$ (bisection on the eigenvalues).</figcaption>
+becomes unstable. The readout gives the largest stable $\nu$ for this $N$ (bisection on the eigenvalues; for a finite $N$ it can be slightly larger than the $N\to\infty$ value of the table,
+and forward Euler has a tiny but nonzero limit that shrinks as $N$ grows).</figcaption>
 </figure>
 
 <div class="box try">
 <span class="box-title">Try this</span>
 <ul>
 <li>Upwind, $p = 2$, SSP-RK3: find the critical CFL with the slider and compare with the table. Then switch to forward Euler.</li>
-<li>Central flux: all eigenvalues sit on the imaginary axis. SSP-RK3 and RK4 contain a piece of that axis (up to $\sqrt3$ and $2\sqrt2$); SSP-RK2 does not.</li>
+<li>Central flux: all eigenvalues sit on the imaginary axis. SSP-RK3 and RK4 contain a piece of that axis (up to $\sqrt3$ and $2\sqrt2$); SSP-RK2 and forward Euler do not
+($|R(\mathrm iy)| > 1$ for every $y \ne 0$), so with them the central scheme is unstable for <em>every</em> time step and the readout shows $\nu_{\max} = 0$.</li>
 <li>Lumped mass: the spectrum shrinks, the critical CFL grows.</li>
 </ul>
 </div>
@@ -258,14 +289,17 @@ $s_k \leftarrow \operatorname{minmod}(s_k, \tfrac12\Delta^-, \tfrac12\Delta^+)$,
 </ol>
 <p>Here $\operatorname{minmod}(a,b,c)$ is the smallest in magnitude if all three have the same sign, else $0$. The cell average is never touched, so <b>conservation is
 preserved</b>. Pure minmod also flattens smooth extrema (it cannot tell a peak from a shock), which degrades accuracy there. The <b>TVB</b> fix (Shu 1987)
-leaves a quantity alone if it is small, $|a| \le M h^2$, with a user constant $M$ of the size of $|u_{xx}|$ at extrema.</p>
+leaves a quantity alone if it is small, $|a| \le M h^2$, with a user constant $M$ of the size of $|u_{xx}|$ at extrema. For $u = \sin 2\pi x$ that is $4\pi^2 \approx 39.5$:
+in our test ($p = 2$, $N = 16$, one period) $M = 20$ still clips the wave (error $16\times$ that of the unlimited scheme), while $M = 50$, the default of the playground, never touches it.</p>
 
 <div class="box warn">
 <span class="box-title">What goes wrong</span>
 <ul>
 <li><b>Limiter everywhere:</b> with $M = 0$ the limiter fires at every smooth extremum, and a sine wave slowly turns into a trapezoid. Use TVB ($M&gt;0$) or a better troubled-cell indicator.</li>
-<li><b>Too large a time step:</b> DG's CFL limit shrinks like $1/(2p+1)$. Using the finite-volume habit $\nu \approx 0.9$ with $p = 3$ explodes within a few steps.</li>
-<li><b>Aliasing:</b> under-resolved nonlinear problems with collocation can blow up even without shocks; over-integrate or filter.</li>
+<li><b>Too large a time step:</b> DG's CFL limit shrinks roughly like $1/(2p+1)$: $\nu_{\max} = 0.130$ for $p = 3$ with SSP-RK3. The finite-volume habit $\nu \approx 0.9$ is seven times too
+large and explodes within three steps (set the time-step slider of the playground above $1$ to watch a milder version).</li>
+<li><b>Aliasing:</b> under-resolved nonlinear problems with collocation can blow up although the time step is fine; over-integrate, filter or limit. A smaller $\Delta t$ does not help.</li>
+<li><b>Naive upwinding for nonlinear fluxes:</b> choosing the upwind side by an averaged speed admits expansion shocks; use a Riemann-solver flux (Godunov, Rusanov, HLL…).</li>
 <li><b>Central flux:</b> energy-conserving does not mean accurate — without dissipation the high-frequency errors never decay.</li>
 </ul>
 </div>
@@ -283,8 +317,62 @@ on unstructured meshes one needs a face-to-element connectivity table instead.</
 <figure class="widget" id="w-dg2d">
 <figcaption><b>2D DG on quads</b> (DG-SEM, Rusanov flux, SSP-RK3, periodic unit square). The colour is the true polynomial evaluated at every pixel, so you can
 see the small jumps across element edges (thin lines). The rotating blob makes one full revolution in $t = 1$; compare $p = 1$ and $p = 4$ on the same mesh.
-Burgers' equation $u_t + (u^2/2)_x + (u^2/2)_y = 0$ steepens a smooth wave into a shock along the diagonal (no limiter here: watch the oscillations appear).</figcaption>
+Burgers' equation $u_t + (u^2/2)_x + (u^2/2)_y = 0$ steepens a smooth wave into a shock along the diagonal at $t = 1/(2.8\pi) \approx 0.11$. There is <em>no limiter</em> here: watch the
+oscillations appear. For $p \le 3$ they stay bounded up to the final time (tested on the coarsest, the default and the finest mesh of the slider); for high degree ($p = 5$, or $p = 4$ on the finest mesh) the unlimited collocated
+scheme blows up after the shock has formed, and the widget stops with a message — a 2D instance of the aliasing problem above.</figcaption>
 </figure>
+
+<h2 id="systems">Systems: DG for the Euler equations</h2>
+<p>Real flow problems are <em>systems</em> of conservation laws. The Euler equations of gas dynamics (chapter 5) read
+$\partial_t \mathbf U + \partial_x \mathbf F(\mathbf U) = \mathbf 0$ with</p>
+$$\mathbf U = \begin{pmatrix}\rho\\ \rho u\\ E\end{pmatrix},\qquad
+\mathbf F(\mathbf U) = \begin{pmatrix}\rho u\\ \rho u^2 + p\\ u\,(E + p)\end{pmatrix},\qquad p = (\gamma - 1)\big(E - \tfrac12\rho u^2\big),$$
+<p>density $\rho$, velocity $u$, total energy density $E$, pressure $p$, and $\gamma = 1.4$ for air. Nothing in the derivation of DG used that $u$ was a single number, so the method
+carries over <b>component by component</b>:</p>
+<ul>
+<li><b>Unknowns.</b> Each of the three components of $\mathbf U_h$ is a polynomial of degree $p$ per element: $3(p+1)$ numbers per element in 1D.</li>
+<li><b>Weak form.</b> Exactly the box above, once per component, with $f \to \mathbf F$:
+$\int_{K_k} \partial_t \mathbf U_h\, v = \int_{K_k} \mathbf F(\mathbf U_h)\, v_x - \big(\hat{\mathbf F}_{k+\frac12}\, v(x^-_{k+\frac12}) - \hat{\mathbf F}_{k-\frac12}\, v(x^+_{k-\frac12})\big)$.
+The components are coupled only through $\mathbf F$; mass and differentiation matrices are the scalar ones.</li>
+<li><b>Numerical flux.</b> $\hat{\mathbf F}(\mathbf U^-, \mathbf U^+)$ is an (approximate) Riemann solver — Rusanov, HLL, HLLC of chapter 5, unchanged. "Upwinding" a system means
+upwinding each of its three wave families ($u - c$, $u$, $u + c$ with the sound speed $c = \sqrt{\gamma p/\rho}$), which is precisely what a Riemann solver does.</li>
+<li><b>Quadrature.</b> $\mathbf F$ is a <em>rational</em> function of $\mathbf U$ (it divides by $\rho$), so no quadrature rule is exact and aliasing is always present; our code uses
+$\lceil 3p/2\rceil + 2$ Gauss points.</li>
+<li><b>Time step.</b> $\Delta t = 0.8\,\nu_{\max}\,h/\max(|u| + c)$: the scalar limit $\nu_{\max}$ of the table with the fastest wave speed in place of $|a|$.</li>
+<li><b>Conservation.</b> Testing with $v = 1$ gives the finite-volume balance for mass, momentum and energy separately; our tests confirm all three to round-off on a periodic domain with shocks.</li>
+</ul>
+<p>What does <em>not</em> carry over for free is the nonlinear stabilisation. Two questions have to be answered, and our (deliberately simple) answers are:</p>
+<ol>
+<li><b>Which variables are limited?</b> We apply the scalar TVB-minmod limiter to the <em>conserved</em> variables $\rho$, $\rho u$, $E$: an element is troubled if any of the three fails the
+minmod test, and then all three are reduced to their limited linear parts. Limiting the <em>characteristic</em> variables (the amplitudes of the three wave families, obtained with the
+eigenvectors of $\mathbf F'(\mathbf U)$) is the classical refinement (Cockburn, Lin &amp; Shu 1989); it is sharper at contact discontinuities but more code.</li>
+<li><b>What if density or pressure become negative?</b> Then the sound speed $\sqrt{\gamma p/\rho}$ is not even defined. As a safeguard we check $\rho$ and $p$ at all nodes and quadrature points
+after every Runge–Kutta stage; where one of them falls below a tiny floor, the element's polynomial is squeezed towards its cell average,
+$\mathbf U_h \leftarrow \bar{\mathbf U} + \theta\,(\mathbf U_h - \bar{\mathbf U})$ with $0 \le \theta \le 1$ as large as possible ($\theta = 0$ is the first-order, piecewise-constant fallback).
+The cell average is untouched, so conservation survives. This is the scaling idea of Zhang &amp; Shu (2010), who also prove under which time-step restriction the cell averages
+themselves stay positive. We do <em>not</em> prove that for our time step: the code checks it and stops if a cell average is inadmissible. For every setting of the widget below this never
+happens (tested: all degrees, fluxes, limiters and mesh sizes offered).</li>
+</ol>
+
+<figure class="widget" id="w-dgeuler">
+<figcaption><b>DG for the 1D Euler equations.</b> Density, velocity and pressure of the DG solution (one polynomial per element, alternating colours) against the exact solution (dashed).
+<em>Sod shock tube</em>: a membrane at $x = 0.5$ separates gas at rest with $(\rho, p) = (1, 1)$ from $(0.125, 0.1)$; at $t = 0.2$ a rarefaction fan, a contact discontinuity and a
+shock have formed (exact Riemann solution of chapter 5). <em>Smooth density wave</em>: $\rho = 1 + 0.2\sin 2\pi x$, $u = p = 1$ on a periodic domain, simply transported; here the
+error falls like $h^{p+1}$. Bars along the bottom of the density plot mark the elements changed by the slope limiter and by the positivity fallback in the last stage.
+SSP-RK3, limiter after every stage.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>Sod, minmod limiter: compare $p = 0$ (first-order finite volumes, everything smeared) with $p = 2$ on the same mesh. The rarefaction becomes much sharper; the contact (the middle
+jump in $\rho$, invisible in $u$ and $p$) stays the most smeared wave.</li>
+<li>Switch the flux from HLLC to Rusanov, which ignores the contact wave: the contact gets a little wider (at $N = 40$ the $L^1$ error of $\rho$ grows by 10–15 %, for $p = 0$ and for $p = 2$ alike).</li>
+<li>Limiter "none": over- and undershoots at the shock and the contact, and the positivity fallback fires occasionally (the counter in the readout). The $L^1$ error is nevertheless
+<em>smaller</em> than with minmod, because minmod also flattens the smooth rarefaction.</li>
+<li>Smooth density wave, $p = 3$, $N = 20$: with "none" or TVB the error is tiny; minmod ($M = 0$) clips the extrema and loses orders of magnitude, as in the scalar case.</li>
+</ul>
+</div>
 
 <h2 id="compare">DG vs finite volumes vs continuous FEM</h2>
 <table class="data">
@@ -306,9 +394,10 @@ Burgers' equation $u_t + (u^2/2)_x + (u^2/2)_y = 0$ steepens a smooth wave into 
 <li>Test with polynomials on one element, integrate by parts, replace the face flux by a numerical flux: volume term + surface term.</li>
 <li>Testing with $v = 1$ gives the finite volume update: local conservation. $p = 0$ <em>is</em> first-order FV.</li>
 <li>Upwind flux: $\frac{\mathrm d}{\mathrm dt}\frac12\|u_h\|^2 = -\sum\frac{|a|}2\jump{u}^2 \le 0$; central flux: energy conserved, no damping.</li>
-<li>Smooth solutions: error $O(h^{p+1})$. Explicit time steps: $\nu = |a|\Delta t/h \lesssim 1/(2p+1)$.</li>
-<li>Exact integration vs GLL collocation (lumped mass, DG-SEM): equal accuracy for linear problems, aliasing for nonlinear ones.</li>
+<li>Smooth solutions: error $O(h^{p+1})$. Explicit time steps: $\nu = |a|\Delta t/h \le \nu_{\max} \approx 1/(2p+1)$ — compute $\nu_{\max}$ from the spectrum, do not guess it.</li>
+<li>Exact integration vs GLL collocation (lumped mass, DG-SEM): the same order $p+1$ for linear problems (with a larger error constant for the lumped scheme), aliasing for nonlinear ones.</li>
 <li>Discontinuities need limiters (minmod/TVB), which keep cell averages and hence conservation.</li>
+<li>Systems (Euler): the same scheme per component with a Riemann-solver flux; limiting and positivity of $\rho$, $p$ need extra care.</li>
 </ul>
 <p>Next, chapter 7 rewrites the same method without any integrals: <em>flux reconstruction</em>.</p>
 
@@ -318,7 +407,9 @@ Burgers' equation $u_t + (u^2/2)_x + (u^2/2)_y = 0$ steepens a smooth wave into 
 <li>C.-W. Shu, <em>TVB uniformly high-order schemes for conservation laws</em>, Math. Comp. 49 (1987).</li>
 <li>C.-W. Shu, S. Osher, <em>Efficient implementation of essentially non-oscillatory shock-capturing schemes</em>, J. Comput. Phys. 77 (1988).</li>
 <li>B. Cockburn, C.-W. Shu, <em>TVB Runge–Kutta local projection discontinuous Galerkin finite element method for conservation laws II: general framework</em>, Math. Comp. 52 (1989).</li>
+<li>B. Cockburn, S.-Y. Lin, C.-W. Shu, <em>TVB Runge–Kutta local projection discontinuous Galerkin finite element method for conservation laws III: one-dimensional systems</em>, J. Comput. Phys. 84 (1989).</li>
 <li>B. Cockburn, C.-W. Shu, <em>Runge–Kutta discontinuous Galerkin methods for convection-dominated problems</em>, J. Sci. Comput. 16 (2001).</li>
+<li>X. Zhang, C.-W. Shu, <em>On positivity-preserving high order discontinuous Galerkin schemes for compressible Euler equations on rectangular meshes</em>, J. Comput. Phys. 229 (2010).</li>
 <li>E. Tadmor, <em>The numerical viscosity of entropy stable schemes for systems of conservation laws I</em>, Math. Comp. 49 (1987).</li>
 <li>J. S. Hesthaven, T. Warburton, <em>Nodal Discontinuous Galerkin Methods</em>, Springer, 2008.</li>
 <li>D. A. Kopriva, <em>Implementing Spectral Methods for Partial Differential Equations</em>, Springer, 2009.</li>

@@ -7,19 +7,27 @@
  *  - w-anatomy  : one element's update split into volume and surface contributions
  *  - w-spectrum : eigenvalues of the DG operator vs the RK stability region, CFL slider
  *  - w-dg2d     : DG-SEM on periodic quads (rotating blob, diagonal advection, 2D Burgers)
+ *  - w-dgeuler  : DG for the 1D Euler equations (Sod shock tube, smooth density wave)
+ *
+ * Time steps: every widget derives Δt from the computed linear stability limit ν_max
+ * (dgStableCFL in lib/core/dg/spectrum.js), never from the rule of thumb 1/(2p+1) alone, and every
+ * animation stops with an explanatory message when the solution leaves the plausible range (blownUp).
  */
 import { initChapter, mount, selfCheck, renderMath } from '../../lib/ui/chapter.js';
-import { widgetLayout, slider, select, checkbox, button, buttonRow, readout, fmt, h as el } from '../../lib/ui/controls.js';
+import { widgetLayout, slider, select, checkbox, button, readout, fmt, h as el } from '../../lib/ui/controls.js';
 import { createCanvas, View2D, theme, seriesColors } from '../../lib/viz/canvas.js';
 import { Plot } from '../../lib/viz/plot1d.js';
 import { Animator } from '../../lib/viz/anim.js';
 import { colorbar } from '../../lib/viz/colormap.js';
 import { drawGrid } from '../../lib/viz/meshdraw.js';
-import { drawPiecewise, elementColors, shadeStabilityRegion, drawQpField } from '../../lib/viz/dgviz.js';
-import { makeDG1D, refNodes, refMatrices } from '../../lib/core/dg/dg1d.js';
+import { drawPiecewise, elementColors, shadeStabilityRegion, drawQpField, playControls } from '../../lib/viz/dgviz.js';
+import { makeDG1D, refNodes, refMatrices, blownUp } from '../../lib/core/dg/dg1d.js';
+import { makeDGEuler1D, makeEulerLimiter, EULER_DG_PROBLEMS } from '../../lib/core/dg/dgeuler1d.js';
+import { exactRiemann } from '../../lib/core/models/eulerriemann.js';
+import { EULER_FLUXES } from '../../lib/core/models/euler.js';
 import { makeSlopeLimiter } from '../../lib/core/dg/limiters.js';
 import { makeDG2D } from '../../lib/core/dg/dg2d.js';
-import { operatorEigs, maxStableCFL, spectralRadius } from '../../lib/core/dg/spectrum.js';
+import { operatorEigs, maxStableCFL, spectralRadius, dgStableCFL, containsImaginaryAxis, CFL_SAFETY } from '../../lib/core/dg/spectrum.js';
 import { advection, burgers } from '../../lib/core/models/scalar.js';
 import { makeFV1D, cellAverages } from '../../lib/core/fv/fv1d.js';
 import { makeStepper, stabilityAmp, RK_LABEL } from '../../lib/core/time/rk.js';
@@ -32,14 +40,19 @@ const TWO_PI = 2 * Math.PI;
 /** periodic wrap to [0,1) */
 const wrap = (x) => x - Math.floor(x);
 
-/** Play/pause + reset buttons wired to an Animator. */
-function playControls(parent, anim, onReset) {
-  const row = buttonRow(parent);
-  const play = button(row, { label: '▶ Play', primary: true, onClick: () => anim.toggle() });
-  button(row, { label: '↺ Reset', onClick: onReset });
-  anim.o.onState = (r) => play.setLabel(r ? '❚❚ Pause' : '▶ Play');
-  return play;
+/**
+ * Replace the options of a select control (lib/ui/controls.js) in place.
+ * @param {{el: HTMLElement}} ctl handle returned by select()
+ * @param {Array<{value: string, label: string}>} options
+ * @param {string} value option to select
+ */
+function setOptions(ctl, options, value) {
+  const s = ctl.el.querySelector('select');
+  s.textContent = '';
+  for (const o of options) { const e = document.createElement('option'); e.value = o.value; e.textContent = o.label; s.appendChild(e); }
+  s.value = value;
 }
+const warn = (msg) => `\n<span class="status-bad">⚠ ${msg}</span>`;
 
 /** Initial data on the periodic unit interval. */
 const INIT = {
@@ -58,18 +71,27 @@ function dg1dWidget(fig) {
   p1.style.flex = '1 1 100%';
   L.controls.classList.add('wide');
   const s1 = createCanvas(p1, { aspect: 0.42 });
-  const st = { p: 2, N: 16, eq: 'advection', init: 'sine', flux: 'upwind', quad: 'exact', lim: 'none', M: 20, cfl: 0.8, t: 0, speed: 2 };
-  let dg, u, step, lim, m0, ref = null, troubled = 0;
+  const st = { p: 2, N: 16, eq: 'advection', init: 'sine', flux: 'upwind', quad: 'exact', lim: 'none', M: 50, frac: CFL_SAFETY, t: 0 };
+  let dg, u, step, lim, m0, ref = null, troubled = 0, nuMax = 0, blown = false;
+  // Fluxes offered per equation. For advection Rusanov and Godunov coincide with upwind, so only upwind and
+  // central are listed. For Burgers the "upwind" flux of scalar.js is Roe's flux WITHOUT entropy fix (it keeps
+  // expansion shocks) and the central flux is nonlinearly unstable, so only the two entropy-stable fluxes are offered.
+  const FLUX_OPTS = {
+    advection: [{ value: 'upwind', label: 'upwind' }, { value: 'central', label: 'central' }],
+    burgers: [{ value: 'godunov', label: 'Godunov (exact Riemann solver)' }, { value: 'rusanov', label: 'Rusanov (local Lax–Friedrichs)' }],
+  };
 
-  select(L.controls, { label: 'equation', value: st.eq, options: [{ value: 'advection', label: 'linear advection, a = 1' }, { value: 'burgers', label: 'Burgers  u_t + (u²/2)_x = 0' }], onChange: (v) => { st.eq = v; build(); } });
+  select(L.controls, { label: 'equation', value: st.eq, options: [{ value: 'advection', label: 'linear advection, a = 1' }, { value: 'burgers', label: 'Burgers  u_t + (u²/2)_x = 0' }], onChange: (v) => {
+    st.eq = v; st.flux = FLUX_OPTS[v][0].value; setOptions(fluxSel, FLUX_OPTS[v], st.flux); build();
+  } });
   select(L.controls, { label: 'initial data', value: st.init, options: Object.entries(INIT).map(([k, v]) => ({ value: k, label: v.label })), onChange: (v) => { st.init = v; build(); } });
   slider(L.controls, { label: 'degree $p$', min: 0, max: 5, step: 1, value: st.p, onInput: (v) => { st.p = v; build(); } });
   slider(L.controls, { label: 'elements $N$', min: 4, max: 64, step: 1, value: st.N, onInput: (v) => { st.N = v; build(); } });
-  select(L.controls, { label: 'numerical flux', value: st.flux, options: [{ value: 'upwind', label: 'upwind' }, { value: 'rusanov', label: 'Rusanov (local Lax–Friedrichs)' }, { value: 'godunov', label: 'Godunov' }, { value: 'central', label: 'central' }], onChange: (v) => { st.flux = v; build(); } });
+  const fluxSel = select(L.controls, { label: 'numerical flux', value: st.flux, options: FLUX_OPTS[st.eq], onChange: (v) => { st.flux = v; build(); } });
   select(L.controls, { label: 'quadrature', value: st.quad, options: [{ value: 'exact', label: 'exact (Gauss, full mass matrix)' }, { value: 'collocated', label: 'GLL collocation (DG-SEM, lumped)' }], onChange: (v) => { st.quad = v; build(); } });
   select(L.controls, { label: 'limiter', value: st.lim, options: [{ value: 'none', label: 'none' }, { value: 'minmod', label: 'minmod (M = 0)' }, { value: 'tvb', label: 'TVB minmod (M below)' }], onChange: (v) => { st.lim = v; build(); } });
   slider(L.controls, { label: 'TVB constant $M$', min: 0, max: 400, step: 5, value: st.M, onInput: (v) => { st.M = v; if (st.lim === 'tvb') build(); } });
-  slider(L.controls, { label: 'CFL (× 1/(2p+1))', min: 0.1, max: 1.3, step: 0.05, value: st.cfl, onInput: (v) => { st.cfl = v; } });
+  slider(L.controls, { label: 'time step $\\Delta t/\\Delta t_{\\max}$', min: 0.1, max: 1.5, step: 0.05, value: st.frac, onInput: (v) => { st.frac = v; if (!blown) draw(); } });
   const anim = new Animator(fig, { step: () => advance(), draw: () => draw(), stepsPerFrame: 3 });
   playControls(L.controls, anim, () => { build(); });
   const out = readout(L.controls);
@@ -83,7 +105,9 @@ function dg1dWidget(fig) {
     if (lim) troubled = lim.apply(u); else troubled = 0;
     step = makeStepper('ssprk3', dg.n, lim ? (v) => { troubled = lim.apply(v); } : undefined);
     m0 = dg.mass(u);
-    st.t = 0;
+    st.t = 0; blown = false;
+    // largest stable CFL number of SSP-RK3 for this degree / flux / mass matrix (linear advection, N → ∞)
+    nuMax = dgStableCFL(st.p, { flux: st.flux === 'central' ? 'central' : 'upwind', quad: st.quad });
     // Burgers reference: fine FV (MUSCL + MC limiter) advanced in lockstep
     if (st.eq === 'burgers') {
       const fv = makeFV1D({ model: burgers, N: 800, flux: 'godunov', recon: 'muscl', limiter: 'mc' });
@@ -93,10 +117,10 @@ function dg1dWidget(fig) {
   }
   function dtNow() {
     const s = Math.max(dg.maxSpeed(u), 1e-3);
-    return st.cfl * dg.h / (s * (2 * st.p + 1));
+    return st.frac * nuMax * dg.h / s;
   }
   function advance() {
-    if (st.t >= 4 - 1e-12) return false;
+    if (blown || st.t >= 4 - 1e-12) return false;
     const dt = Math.min(dtNow(), 4 - st.t);
     step(u, st.t, dt, dg.rhs);
     st.t += dt;
@@ -104,7 +128,7 @@ function dg1dWidget(fig) {
       const d = Math.min(0.4 * ref.fv.h / Math.max(ref.fv.maxSpeed(ref.u), 1e-3), st.t - ref.t);
       ref.step(ref.u, ref.t, d, ref.fv.rhs); ref.t += d;
     }
-    for (let i = 0; i < dg.n; i += 7) if (!Number.isFinite(u[i]) || Math.abs(u[i]) > 1e6) return false; // blown up
+    if (blownUp(u, 1e3)) { blown = true; return false; } // stop: the plot range is [−1.5, 1.5]
     return true;
   }
   function draw() {
@@ -130,14 +154,22 @@ function dg1dWidget(fig) {
     let umin = Infinity, umax = -Infinity;
     for (let i = 0; i < dg.n; i++) { umin = Math.min(umin, u[i]); umax = Math.max(umax, u[i]); }
     const finite = Number.isFinite(mass) && Number.isFinite(E);
-    let txt = `t = ${st.t.toFixed(3)}   Δt = ${fmt(dtNow())}\n` +
+    let txt = `t = ${st.t.toFixed(3)}   Δt = ${blown ? '—' : fmt(dtNow())}\n` +
+      `ν_max = ${nuMax.toFixed(4)}  (SSP-RK3; (2p+1)·ν_max = ${((2 * st.p + 1) * nuMax).toFixed(2)})\n` +
       `mass ∫u_h dx = ${mass.toFixed(12)}\n  drift      = ${fmt(mass - m0, 2)}\n` +
       `energy ½‖u_h‖² = ${fmt(E, 6)}\nnodal min / max = ${fmt(umin)} / ${fmt(umax)}`;
     if (st.eq === 'advection') txt += `\nL² error = ${fmt(dg.l2Error(u, (x) => f0(x - st.t)), 3)}`;
     if (lim) txt += `\nlimited cells (last stage) = ${troubled}`;
-    if (!finite || Math.abs(umax) > 1e5) txt += '\n⚠ the solution blew up — lower the CFL number';
+    if (blown) {
+      // say truthfully WHY: only a time step above the limit is cured by lowering it
+      if (st.frac > 1) txt += warn('blew up: the time step is above the stability limit (Δt/Δt_max > 1) — lower it');
+      else if (st.eq === 'burgers' && st.quad === 'collocated' && !lim) txt += warn('blew up although Δt is below the linear limit: aliasing instability of unlimited GLL collocation at an under-resolved shock — use exact integration or a limiter (a smaller Δt does not help)');
+      else txt += warn('blew up although Δt is below the linear stability limit — nonlinear instability; switch on a limiter');
+    }
     out.set(txt);
-    if (finite && Math.abs(umax) < 1e5) selfCheck('dg1d mass conserved', Math.abs(mass - m0) < 1e-10);
+    if (!blown && finite) selfCheck('dg1d mass conserved', Math.abs(mass - m0) < 1e-10);
+    // the default time step must be stable for linear advection, whatever p / flux / mass matrix is chosen
+    if (st.eq === 'advection' && st.frac <= 1) selfCheck('dg1d: advection stable below the computed CFL limit', !blown);
   }
   s1.onResize(draw);
   build();
@@ -188,10 +220,7 @@ function basisWidget(fig) {
     // exact mass and stiffness by Gauss quadrature
     const G = gaussLegendre(np + 2);
     const M = new Float64Array(np * np), S = new Float64Array(np * np);
-    const dphi = (j, x) => {
-      if (!r) return legendreAll(p, x).dP[j];
-      const e = 1e-6; return (phi(j, x + e) - phi(j, x - e)) / (2 * e);
-    };
+    const dphi = (j, x) => legendreAll(p, x).dP[j]; // only needed for the modal basis (nodal: refMatrices)
     let Dmat = null;
     if (r) {
       const ref = refMatrices(r, G);
@@ -337,7 +366,7 @@ function spectrumWidget(fig) {
   p1.style.flex = '1 1 62%';
   const s1 = createCanvas(p1, { aspect: 0.78 });
   const st = { p: 2, N: 12, flux: 'upwind', quad: 'exact', rk: 'ssprk3', nu: 0.2 };
-  let ev = null, numax = 0;
+  let ev = null, numax = 0, neutral = false;
   slider(L.controls, { label: 'degree $p$', min: 0, max: 5, step: 1, value: st.p, onInput: (v) => { st.p = v; recompute(); } });
   slider(L.controls, { label: 'elements $N$', min: 3, max: 24, step: 1, value: st.N, onInput: (v) => { st.N = v; recompute(); } });
   select(L.controls, { label: 'flux', value: st.flux, options: [{ value: 'upwind', label: 'upwind' }, { value: 'central', label: 'central' }], onChange: (v) => { st.flux = v; recompute(); } });
@@ -349,7 +378,11 @@ function spectrumWidget(fig) {
     // a = 1, h = 1 (domain [0, N]) so that z = ν λ
     const dg = makeDG1D({ p: st.p, N: st.N, a: 0, b: st.N, model: advection(1), flux: st.flux, nodes: 'gll', quad: st.quad });
     ev = operatorEigs(dg.rhs, dg.n);
-    numax = maxStableCFL(ev, st.rk);
+    // A purely imaginary spectrum (central flux) is stable only if the stability region contains a piece of
+    // the imaginary axis. For forward Euler and SSP-RK2 it does not: |R(iy)| > 1 for all y ≠ 0, so ν_max = 0
+    // exactly (a tolerance-based search would report a tiny positive number).
+    neutral = st.flux === 'central' && !containsImaginaryAxis(st.rk);
+    numax = neutral ? 0 : maxStableCFL(ev, st.rk);
     draw();
   }
   function draw() {
@@ -362,14 +395,16 @@ function spectrumWidget(fig) {
     let bad = 0;
     for (let k = 0; k < ev.re.length; k++) {
       const zr = st.nu * ev.re[k], zi = st.nu * ev.im[k];
-      if (stabilityAmp(st.rk, zr, zi) > 1 + 1e-9) { bx.push(zr); by.push(zi); bad++; } else { xs.push(zr); ys.push(zi); }
+      // neutral case: every eigenvalue except λ = 0 is amplified, however slightly
+      const out_ = neutral ? Math.hypot(zr, zi) > 1e-12 : stabilityAmp(st.rk, zr, zi) > 1 + 1e-9;
+      if (out_) { bx.push(zr); by.push(zi); bad++; } else { xs.push(zr); ys.push(zi); }
     }
     P.points(xs, ys, { color: T.accent, r: 3 });
     P.points(bx, by, { color: '#e0457b', r: 4 });
     P.legend([{ label: 'stability region', color: T.accent2 }, { label: 'λΔt inside', color: T.accent, marker: true }, { label: 'λΔt outside (unstable)', color: '#e0457b', marker: true }], 'tl');
     let maxRe = -Infinity; for (let k = 0; k < ev.re.length; k++) maxRe = Math.max(maxRe, ev.re[k]);
     out.set(`${ev.re.length} eigenvalues (h = 1, a = 1)\nmax Re λ = ${fmt(maxRe, 2)}\nspectral radius = ${fmt(spectralRadius(ev), 4)}\n` +
-      `largest stable ν (this N) = ${numax > 0.001 ? numax.toFixed(4) : '≈ 0 (unstable)'}\n(2p+1)·ν_max = ${fmt((2 * st.p + 1) * numax, 3)}\n` +
+      `largest stable ν (this N) = ${neutral ? '0 (no piece of the imaginary axis is stable)' : numax > 0.001 ? numax.toFixed(4) : `${numax.toExponential(1)} (useless)`}\n(2p+1)·ν_max = ${fmt((2 * st.p + 1) * numax, 3)}\n` +
       `ν = ${st.nu.toFixed(3)}: ${bad ? `UNSTABLE (${bad} outside)` : 'stable'}`);
     selfCheck('spectrum: upwind eigenvalues in left half plane', st.flux !== 'upwind' || maxRe < 1e-9);
   }
@@ -392,10 +427,10 @@ function dg2dWidget(fig) {
       u0: blob, exact: (x, y, t) => { const c = Math.cos(TWO_PI * t), s = Math.sin(TWO_PI * t), dx = x - 0.5, dy = y - 0.5; return blob(0.5 + c * dx + s * dy, 0.5 - s * dx + c * dy); }, lo: -0.15, hi: 1.05, T: 1 },
     diag: { label: 'square pulse, velocity (1, 1)', o: { velocity: () => [1, 1] },
       u0: (x, y) => (Math.abs(wrap(x) - 0.5) < 0.2 && Math.abs(wrap(y) - 0.5) < 0.2 ? 1 : 0), exact: (x, y, t) => (Math.abs(wrap(x - t) - 0.5) < 0.2 && Math.abs(wrap(y - t) - 0.5) < 0.2 ? 1 : 0), lo: -0.2, hi: 1.2, T: 1 },
-    burgers: { label: 'Burgers (shock forms at t ≈ 0.11)', o: { problem: 'burgers' },
+    burgers: { label: 'Burgers, no limiter (shock forms at t ≈ 0.11)', o: { problem: 'burgers' },
       u0: (x, y) => 0.5 + 0.7 * Math.sin(TWO_PI * (x + y)), exact: null, lo: -0.35, hi: 1.35, T: 0.4 },
   };
-  let dg, u, step, m0;
+  let dg, u, step, m0, blown = false;
   select(L.controls, { label: 'problem', value: st.prob, options: Object.entries(PROBS).map(([k, v]) => ({ value: k, label: v.label })), onChange: (v) => { st.prob = v; build(); } });
   slider(L.controls, { label: 'degree $p$', min: 1, max: 5, step: 1, value: st.p, onInput: (v) => { st.p = v; build(); } });
   slider(L.controls, { label: 'elements per side', min: 3, max: 16, step: 1, value: st.N, onInput: (v) => { st.N = v; build(); } });
@@ -408,14 +443,17 @@ function dg2dWidget(fig) {
     dg = makeDG2D({ p: st.p, nx: st.N, ny: st.N, flux: 'rusanov', ...P.o });
     u = dg.project(P.u0);
     step = makeStepper('ssprk3', dg.n);
-    m0 = dg.mass(u); st.t = 0;
+    m0 = dg.mass(u); st.t = 0; blown = false;
     draw();
   }
   function advance() {
     const P = PROBS[st.prob];
-    if (st.t >= P.T - 1e-12) return false;
+    if (blown || st.t >= P.T - 1e-12) return false;
+    // 0.5/(2p+1) is below the SSP-RK3 limit of the lumped (GLL) scheme for every p ≤ 5: ν_max (2p+1) ≥ 1.32
     const dt = Math.min(dg.dtStable(u, 0.5), P.T - st.t);
     step(u, st.t, dt, dg.rhs); st.t += dt;
+    // guard: never keep animating garbage (a NaN would also make the next Δt NaN and the loop endless)
+    if (blownUp(u, 50) || !Number.isFinite(st.t)) { blown = true; return false; }
     return true;
   }
   function draw() {
@@ -430,12 +468,126 @@ function dg2dWidget(fig) {
     for (let i = 0; i < dg.n; i++) { umin = Math.min(umin, u[i]); umax = Math.max(umax, u[i]); }
     const mass = dg.mass(u);
     let txt = `t = ${st.t.toFixed(3)} / ${P.T}\nunknowns = ${dg.n} (${(st.p + 1) ** 2} per element)\nmass = ${mass.toFixed(12)}\ndrift = ${fmt(mass - m0, 2)}\nmin / max = ${fmt(umin)} / ${fmt(umax)}`;
-    if (P.exact) txt += `\nL² error = ${fmt(dg.l2Error(u, (x, y) => P.exact(x, y, st.t)), 3)}`;
+    if (P.exact && !blown) txt += `\nL² error = ${fmt(dg.l2Error(u, (x, y) => P.exact(x, y, st.t)), 3)}`;
+    if (blown) txt += warn(st.prob === 'burgers'
+      ? 'stopped: the unlimited scheme blew up at the shock (aliasing of GLL collocation, no limiter). The time step is below the linear limit — lower p instead.'
+      : 'stopped: the solution blew up');
     out.set(txt);
-    if (Number.isFinite(mass)) selfCheck('dg2d mass conserved', Math.abs(mass - m0) < 1e-10);
+    if (!blown && Number.isFinite(mass)) selfCheck('dg2d mass conserved', Math.abs(mass - m0) < 1e-10);
+    if (st.prob !== 'burgers') selfCheck('dg2d: linear advection never blows up', !blown);
   }
   s1.onResize(() => { s1._qp = null; draw(); });
   build();
+}
+
+/* ------------------------------------------------------------------ */
+/* W6: DG for a system — the 1D Euler equations                         */
+/* ------------------------------------------------------------------ */
+function eulerWidget(fig) {
+  const L = widgetLayout(fig);
+  const surfs = ['density $\\rho$', 'velocity $u$', 'pressure $p$'].map((t) => createCanvas(L.panel(t, '1 1 260px'), { aspect: 0.8 }));
+  L.controls.classList.add('wide');
+  const st = { prob: 'sod', p: 2, N: 40, flux: 'hllc', lim: 'minmod' };
+  // only settings that the tests sweep completely (tests/conv/dgeuler1d.test.js) are offered
+  const LIMS = [
+    { value: 'minmod', label: 'minmod on (ρ, ρu, E), M = 0' },
+    { value: 'tvb', label: 'TVB minmod, M = 50' },
+    { value: 'none', label: 'none (positivity fallback only)' },
+  ];
+  const redo = () => runToEnd();
+  select(L.controls, { label: 'problem', value: st.prob, options: Object.entries(EULER_DG_PROBLEMS).map(([k, v]) => ({ value: k, label: v.label })), onChange: (v) => { st.prob = v; redo(); } });
+  slider(L.controls, { label: 'degree $p$', min: 0, max: 3, step: 1, value: st.p, onInput: (v) => { st.p = v; redo(); } });
+  slider(L.controls, { label: 'elements $N$', min: 10, max: 160, step: 10, value: st.N, onInput: (v) => { st.N = v; redo(); } });
+  select(L.controls, { label: 'numerical flux (Riemann solver)', value: st.flux, options: ['rusanov', 'hll', 'hllc'].map((k) => ({ value: k, label: EULER_FLUXES[k].label })), onChange: (v) => { st.flux = v; redo(); } });
+  select(L.controls, { label: 'slope limiter', value: st.lim, options: LIMS, onChange: (v) => { st.lim = v; redo(); } });
+  const anim = new Animator(fig, { step: () => advance(), draw: () => draw() });
+  const row = playControls(L.controls, anim, () => { anim.pause(); reset(); draw(); });
+  button(row, { label: '⏭ End', onClick: () => runToEnd() });
+  const out = readout(L.controls);
+  let S = null;
+
+  /** exact primitive state [ρ, u, p] at (x, t) */
+  function exactAt(x, t) {
+    const P = S.P;
+    if (P.exact) return P.exact(x, t);
+    return t > 0 ? S.ex.sample((x - P.x0) / t) : P.init(x);
+  }
+  function reset() {
+    const P = EULER_DG_PROBLEMS[st.prob];
+    const dg = makeDGEuler1D({ p: st.p, N: st.N, flux: st.flux, bc: P.bc });
+    const U = dg.project(P.init);
+    const lim = makeEulerLimiter(dg, { limit: st.lim !== 'none', M: st.lim === 'tvb' ? 50 : 0 });
+    lim.apply(U);
+    const nu = CFL_SAFETY * dgStableCFL(st.p); // SSP-RK3 limit of upwind DG, with safety factor
+    S = { P, dg, U, lim, nu, t: 0, steps: 0, failed: false, nSq: 0, T0: dg.totals(U), ex: P.WL ? exactRiemann(P.WL, P.WR) : null,
+      step: makeStepper('ssprk3', dg.n, (V) => { lim.apply(V); S.nSq += lim.stats.squeezed; }) };
+    // fixed axes from the exact solution at the final time (and the initial data)
+    const rng = [[Infinity, -Infinity], [Infinity, -Infinity], [Infinity, -Infinity]];
+    for (const t of [0, P.T]) for (let k = 0; k <= 400; k++) { const W = exactAt(k / 400, t); for (let c = 0; c < 3; c++) { rng[c][0] = Math.min(rng[c][0], W[c]); rng[c][1] = Math.max(rng[c][1], W[c]); } }
+    S.lims = rng.map(([a, b]) => { const pd = 0.15 * Math.max(b - a, 0.2); return [a - pd, b + pd]; });
+    anim.stepsPerFrame = Math.max(1, Math.ceil(P.T * dg.maxSpeed(U) / (nu * dg.h) / 150));
+  }
+  function advance() {
+    if (S.failed || S.t >= S.P.T - 1e-13) return false;
+    const dt = Math.min(S.nu * S.dg.h / S.dg.maxSpeed(S.U), S.P.T - S.t);
+    S.step(S.U, S.t, dt, S.dg.rhs); S.t += dt; S.steps++;
+    const m = S.dg.minima(S.U);
+    if (!m.finite || S.lim.stats.failed || !(m.rho > 0) || !(m.p > 0)) { S.failed = true; return false; }
+    return S.t < S.P.T - 1e-13;
+  }
+  function runToEnd() {
+    anim.pause(); reset();
+    const t0 = performance.now();
+    while (advance() !== false) if (performance.now() - t0 > 3000) break;
+    draw();
+  }
+  function draw() {
+    const T = theme(), C = seriesColors(), { P, dg, U, lim } = S, ec = elementColors();
+    const xs = [], W = [[], [], []];
+    for (let k = 0; k <= 800; k++) { const x = k / 800, w = exactAt(x, S.t); xs.push(x); for (let c = 0; c < 3; c++) W[c].push(w[c]); }
+    // DG polynomials: sample the conserved variables per element and convert to (ρ, u, p)
+    const ns = dg.p === 0 ? 1 : Math.max(2, Math.min(12, Math.round(480 / dg.N))), cons = [0, 0, 0];
+    const ex = [], ey = [[], [], []];
+    for (let k = 0; k < dg.N; k++) {
+      const px = [], py = [[], [], []];
+      for (let s = 0; s <= ns; s++) {
+        const xi = -1 + 2 * s / ns;
+        dg.evalRef(U, k, xi, cons);
+        const r = cons[0], v = cons[1] / r;
+        px.push(dg.xf[k] + (xi + 1) * dg.h / 2); py[0].push(r); py[1].push(v); py[2].push((dg.gamma - 1) * (cons[2] - 0.5 * r * v * v));
+      }
+      ex.push(px); for (let c = 0; c < 3; c++) ey[c].push(py[c]);
+    }
+    for (let c = 0; c < 3; c++) {
+      const Q = new Plot(surfs[c], { xlim: [0, 1], ylim: S.lims[c], xlabel: 'x' });
+      Q.frame();
+      Q.line(xs, W[c], { color: T.ink, width: 1.3, dash: [5, 4], alpha: 0.85 });
+      if (!S.failed) for (let k = 0; k < dg.N; k++) Q.line(ex[k], ey[c][k], { color: ec(k), width: 2 });
+      if (c === 0) {
+        const y0 = S.lims[0][0] + 0.03 * (S.lims[0][1] - S.lims[0][0]);
+        for (let k = 0; k < dg.N; k++) {
+          if (lim.troubled[k]) Q.line([dg.xf[k], dg.xf[k + 1]], [y0, y0], { color: C[1], width: 5 });
+          if (lim.squeezed[k]) Q.line([dg.xf[k], dg.xf[k + 1]], [y0, y0], { color: C[3], width: 5 });
+        }
+        Q.legend([{ label: 'exact', color: T.ink, dash: [5, 4] }, { label: `DG, p = ${dg.p}`, color: T.accent }, { label: 'slope-limited cells', color: C[1] }, { label: 'positivity fallback', color: C[3] }], 'tr');
+      }
+    }
+    const m = dg.minima(U), Tn = dg.totals(U), d = Tn.map((v, i) => v - S.T0[i]);
+    const l1 = S.failed ? NaN : dg.l1Error(U, 0, (x) => exactAt(x, S.t)[0]);
+    let txt = `t = ${S.t.toFixed(4)} / ${P.T}   steps = ${S.steps}\n` +
+      `Δt = ${CFL_SAFETY}·ν_max·h/max(|u|+c),  ν_max = ${dgStableCFL(st.p).toFixed(3)}\n` +
+      `unknowns = ${dg.n}  (3 × ${dg.N} × ${dg.np})\n` +
+      `L¹ error of ρ = ${fmt(l1, 3)}\nmin ρ = ${fmt(m.rho, 4)}, min p = ${fmt(m.p, 4)}\n` +
+      `slope-limited cells (last stage) = ${lim.stats.limited}\npositivity fallbacks (whole run) = ${S.nSq}\n`;
+    if (P.bc === 'periodic') txt += `drift of ∫ρ, ∫ρu, ∫E = ${d.map((v) => v.toExponential(1)).join(', ')}`;
+    else txt += `change of ∫ρ = ${d[0].toExponential(1)}, of ∫E = ${d[2].toExponential(1)}\n(≈ 0 until a wave reaches the open ends)`;
+    if (S.failed) txt += warn('stopped: a cell average left the admissible set (ρ, p > 0) — this should not happen for the offered settings');
+    out.set(txt);
+    selfCheck('Euler DG: admissible state (ρ, p > 0, finite)', !S.failed);
+    if (!S.failed && P.bc === 'periodic') selfCheck('Euler DG conserves mass, momentum, energy', Math.max(...d.map(Math.abs)) < 1e-11);
+  }
+  surfs.forEach((s) => s.onResize(() => S && draw()));
+  runToEnd();
 }
 
 initChapter(() => {
@@ -444,4 +596,5 @@ initChapter(() => {
   mount('w-anatomy', anatomyWidget);
   mount('w-spectrum', spectrumWidget);
   mount('w-dg2d', dg2dWidget);
-});
+  mount('w-dgeuler', eulerWidget);
+}, { minChecks: 9 }); // distinct selfCheck labels recorded synchronously while mounting

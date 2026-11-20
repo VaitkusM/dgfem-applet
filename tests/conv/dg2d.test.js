@@ -50,3 +50,34 @@ test('2D rotating blob: one revolution returns the blob, error decreases with p'
   }
   for (let k = 1; k < errs.length; k++) assert(errs[k] < 0.6 * errs[k - 1], `errors ${errs}`);
 });
+
+/* ---- added by the chapter 6/7 audit ---- */
+import { blownUp } from '../../lib/core/dg/dg1d.js';
+
+/** The time loop of the chapter-6 2D widget for Burgers; returns the time of the first blow-up (or null). */
+function burgers2d(p, N, T = 0.4) {
+  const dg = makeDG2D({ p, nx: N, ny: N, flux: 'rusanov', problem: 'burgers' });
+  const u = dg.project((x, y) => 0.5 + 0.7 * Math.sin(TWO_PI * (x + y)));
+  const step = makeStepper('ssprk3', dg.n);
+  let t = 0;
+  while (t < T - 1e-12) {
+    const dt = Math.min(dg.dtStable(u, 0.5), T - t);
+    step(u, t, dt, dg.rhs); t += dt;
+    if (blownUp(u, 50)) return t;
+  }
+  return null;
+}
+
+test('2D Burgers without limiter: bounded up to T = 0.4 for p ≤ 3 on every mesh of the widget; p = 5 blows up and the guard catches it', () => {
+  for (const p of [1, 2, 3]) for (const N of [3, 8, 16]) assert(burgers2d(p, N) === null, `p=${p} N=${N} blew up`);
+  const tb = burgers2d(5, 8);
+  assert(tb !== null && tb > 0.1137, `p=5 N=8: blow-up expected after the shock forms (t = 0.114), got ${tb}`);
+});
+
+test('dtStable never returns NaN or 0 for finite data, and blownUp flags the state that would make it NaN', () => {
+  const dg = makeDG2D({ p: 2, nx: 4, ny: 4, problem: 'burgers' });
+  const u = dg.project(() => 1);
+  assert(Number.isFinite(dg.dtStable(u, 0.5)) && dg.dtStable(u, 0.5) > 0, 'finite dt');
+  u[3] = NaN;
+  assert(blownUp(u), 'NaN must be detected before the next time step is computed');
+});

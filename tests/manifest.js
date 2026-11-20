@@ -8,6 +8,7 @@ export const TEST_FILES = [
   'conv/dd.test.js',
   'conv/dg1d.test.js',
   'conv/dg2d.test.js',
+  'conv/dgeuler1d.test.js',
   'conv/euler.test.js',
   'conv/fr1d.test.js',
   'conv/fv1d-hires.test.js',

@@ -9,14 +9,14 @@
  *  - w-accc  : L² error vs c for two meshes (observed order)
  */
 import { initChapter, mount, selfCheck } from '../../lib/ui/chapter.js';
-import { widgetLayout, slider, select, checkbox, button, buttonRow, readout, fmt } from '../../lib/ui/controls.js';
+import { widgetLayout, slider, select, checkbox, readout, fmt } from '../../lib/ui/controls.js';
 import { createCanvas, theme, seriesColors } from '../../lib/viz/canvas.js';
 import { Plot } from '../../lib/viz/plot1d.js';
 import { Animator } from '../../lib/viz/anim.js';
-import { drawPiecewise, elementColors, shadeStabilityRegion } from '../../lib/viz/dgviz.js';
-import { makeFR1D, frBlochEigs } from '../../lib/core/fr/fr1d.js';
+import { drawPiecewise, elementColors, shadeStabilityRegion, playControls } from '../../lib/viz/dgviz.js';
+import { makeFR1D, frBlochEigs, frMatchesDG, frOptimalC } from '../../lib/core/fr/fr1d.js';
 import { correctionCoeffs, evalCorrection, cSD, cHU, vcjhEta } from '../../lib/core/fr/corrections.js';
-import { makeDG1D, integrate } from '../../lib/core/dg/dg1d.js';
+import { makeDG1D, integrate, blownUp } from '../../lib/core/dg/dg1d.js';
 import { maxStableCFL } from '../../lib/core/dg/spectrum.js';
 import { advection, burgers } from '../../lib/core/models/scalar.js';
 import { makeStepper, stabilityAmp, RK_LABEL } from '../../lib/core/time/rk.js';
@@ -25,15 +25,6 @@ import { gaussLegendre } from '../../lib/core/quad/gauss1d.js';
 
 const TWO_PI = 2 * Math.PI;
 const wrap = (x) => x - Math.floor(x);
-
-/** Play/pause + reset buttons wired to an Animator. */
-function playControls(parent, anim, onReset) {
-  const row = buttonRow(parent);
-  const play = button(row, { label: '▶ Play', primary: true, onClick: () => anim.toggle() });
-  button(row, { label: '↺ Reset', onClick: onReset });
-  anim.o.onState = (r) => play.setLabel(r ? '❚❚ Pause' : '▶ Play');
-  return play;
-}
 
 /** Run an array of small jobs asynchronously (keeps the page responsive); calls onDone when all finished. */
 function runChunked(jobs, onProgress, onDone, token) {
@@ -217,7 +208,7 @@ function frdgWidget(fig) {
     sem: { label: 'DG-SEM (GLL, lumped mass)', o: { form: 'strong', quad: 'collocated', nodes: 'gll' } },
   };
   const st = { p: 3, N: 10, corr: 'dg', pts: 'gauss', dgv: 'strong', eq: 'advection', init: 'sine', t: 0 };
-  let fr, dg, uF, uD, stepF, stepD, maxDiff = 0;
+  let fr, dg, uF, uD, stepF, stepD, maxDiff = 0, peak = 0, blown = false;
   select(L.controls, { label: 'FR correction', value: st.corr, options: CORR_OPTS, onChange: (v) => { st.corr = v; build(); } });
   select(L.controls, { label: 'solution points', value: st.pts, options: [{ value: 'gauss', label: 'Gauss' }, { value: 'gll', label: 'Gauss–Lobatto (GLL)' }], onChange: (v) => { st.pts = v; build(); } });
   select(L.controls, { label: 'DG variant', value: st.dgv, options: Object.entries(DGV).map(([k, v]) => ({ value: k, label: v.label })), onChange: (v) => { st.dgv = v; build(); } });
@@ -235,41 +226,53 @@ function frdgWidget(fig) {
     uF = fr.project(INITS[st.init].f);
     uD = dg.project(INITS[st.init].f);
     stepF = makeStepper('ssprk3', fr.n); stepD = makeStepper('ssprk3', dg.n);
-    st.t = 0; maxDiff = 0;
+    st.t = 0; maxDiff = 0; peak = 0; blown = false;
     draw();
   }
   function advance() {
-    if (st.t >= 2 - 1e-12) return false;
+    if (blown || st.t >= 2 - 1e-12) return false;
     const s = Math.max(fr.maxSpeed(uF), 1e-3);
-    const dt = Math.min(0.5 * fr.h / (s * (2 * st.p + 1)), 2 - st.t); // below the DG (c = 0) CFL limit for every p
+    // 0.5/(2p+1) is below the SSP-RK3 limit of DG (ν_max (2p+1) ≥ 0.72 for p ≤ 5), the most restrictive scheme here
+    const dt = Math.min(0.5 * fr.h / (s * (2 * st.p + 1)), 2 - st.t);
     stepF(uF, st.t, dt, fr.rhs); stepD(uD, st.t, dt, dg.rhs);
     st.t += dt;
+    // guard: unlimited collocation can blow up on Burgers (shock + aliasing); never animate garbage
+    if (blownUp(uF, 10) || blownUp(uD, 10)) { blown = true; return false; }
     return true;
   }
   function draw() {
     const T = theme(), C = seriesColors();
     const P = new Plot(s1, { xlim: [0, 1], ylim: [-1, 1.6], xlabel: 'x' });
     P.frame();
-    drawPiecewise(P, fr, uF, { color: C[0], width: 4.5, alpha: 0.55 });
-    drawPiecewise(P, dg, uD, { color: C[1], width: 1.5 });
+    if (!blown) {
+      drawPiecewise(P, fr, uF, { color: C[0], width: 4.5, alpha: 0.55 });
+      drawPiecewise(P, dg, uD, { color: C[1], width: 1.5 });
+    }
     P.legend([{ label: 'FR', color: C[0] }, { label: 'DG', color: C[1] }], 'tr');
     const xs = [], ds = [];
     let mx = 0;
-    for (let i = 0; i <= 600; i++) {
-      const x = (i + 0.5) / 601;
-      const d = Math.abs(fr.evalAt(uF, x) - dg.evalAt(uD, x));
-      xs.push(x); ds.push(Math.max(d, 1e-17)); mx = Math.max(mx, d);
+    if (!blown) {
+      for (let i = 0; i <= 600; i++) {
+        const x = (i + 0.5) / 601;
+        const d = Math.abs(fr.evalAt(uF, x) - dg.evalAt(uD, x));
+        xs.push(x); ds.push(Math.max(d, 1e-17)); mx = Math.max(mx, d);
+      }
+      maxDiff = Math.max(maxDiff, mx);
+      for (let i = 0; i < fr.n; i++) peak = Math.max(peak, Math.abs(uF[i]));
     }
-    maxDiff = Math.max(maxDiff, mx);
     const Q = new Plot(s2, { xlim: [0, 1], ylim: [1e-17, 10], ylog: true, xlabel: 'x' });
     Q.frame();
     Q.line(xs, ds, { color: C[3], width: 1.6 });
     Q.hline(1e-14, { color: T.faint });
-    const match = (st.corr === 'dg' && st.dgv === 'strong') || (st.corr === 'g2' && st.pts === 'gll' && st.dgv === 'sem') ||
-      (st.corr === 'dg' && st.dgv === 'weak' && st.eq === 'advection');
-    out.set(`t = ${st.t.toFixed(3)}\nmax |u_FR − u_DG| now   = ${fmt(mx, 2)}\nmax over the run so far = ${fmt(maxDiff, 2)}\n` +
-      (match ? 'expected: identical schemes (round-off)' : 'expected: different schemes'));
-    if (match) selfCheck('FR = DG for matching pair', mx < 1e-11);
+    // which pairings are the same scheme is decided by frMatchesDG (tested against the right-hand sides)
+    const match = frMatchesDG({ correction: st.corr, points: st.pts, dg: st.dgv, linear: st.eq === 'advection' });
+    let txt = `t = ${st.t.toFixed(3)}\nmax |u_FR − u_DG| now   = ${blown ? '—' : fmt(mx, 2)}\nmax over the run so far = ${fmt(maxDiff, 2)}\nmax |u_FR| so far = ${fmt(peak, 3)}\n` +
+      (match ? 'expected: identical schemes (difference = round-off,\namplified if the solution itself grows)' : 'expected: different schemes');
+    if (blown) txt += '\n<span class="status-bad">⚠ stopped: a solution blew up. Burgers without a limiter is unstable at the shock for this setting (aliasing of the collocated flux); the time step is below the linear limit, so a smaller Δt does not help.</span>';
+    out.set(txt);
+    // identical schemes must agree to round-off as long as the solution stays in its initial range (|u| ≤ 1.3)
+    if (match && !blown && peak < 2) selfCheck('FR = DG for matching pair', mx < 1e-10);
+    if (st.eq === 'advection') selfCheck('FR/DG advection run stays bounded', !blown);
   }
   s1.onResize(draw); s2.onResize(draw);
   build();
@@ -295,22 +298,23 @@ function cflcWidget(fig) {
   function compute() {
     token.cancelled = true; token = { cancelled: false };
     const p = st.p, rk = st.rk, ch = cHU(p);
-    const res = { p, rk, c0: 0, nu: new Float64Array(S.length) };
+    const res = { p, rk, c0: 0, nu: new Float64Array(S.length), opt: null };
     st.curve = null; st.busy = 0;
     const jobs = [() => { res.c0 = maxStableCFL(frBlochEigs(p, { c: 0 }, 48), rk); }]
-      .concat(S.map((s, i) => () => { res.nu[i] = maxStableCFL(frBlochEigs(p, { c: ch * 10 ** s }, 48), rk); }));
+      .concat(S.map((s, i) => () => { res.nu[i] = maxStableCFL(frBlochEigs(p, { c: ch * 10 ** s }, 48), rk); }))
+      // c_+ : maximiser of ν_max(c), golden-section search over log c (same definition as Vincent et al.)
+      .concat([() => { res.opt = frOptimalC(p, rk, { iters: 16, nTheta: 48 }); }]);
     runChunked(jobs, (f) => { st.busy = f; drawCurve(); }, () => { st.curve = res; drawCurve(); drawSpec(); }, token);
     drawCurve(); drawSpec();
   }
   function cPlus() {
     const r = st.curve; if (!r) return null;
-    let k = 0; for (let i = 1; i < S.length; i++) if (r.nu[i] > r.nu[k]) k = i;
-    return { s: S[k], nu: r.nu[k] };
+    return { s: Math.log10(r.opt.c / cHU(r.p)), nu: r.opt.cfl };
   }
   function drawCurve() {
     const T = theme(), C = seriesColors(), p = st.p, ch = cHU(p);
     const r = st.curve;
-    const ymax = r ? Math.max(...r.nu, r.c0) * 1.15 : 1;
+    const ymax = r ? Math.max(...r.nu, r.c0, r.opt.cfl) * 1.15 : 1;
     const P = new Plot(s1, { xlim: [ch * 10 ** -3.6, ch * 1e3], ylim: [0, ymax], xlog: true, xlabel: 'c' });
     P.frame();
     if (!r) { P.text(ch * 1e-2, ymax / 2, `computing … ${Math.round(100 * st.busy)} %`, { color: T.soft }); out.set('computing spectra …'); return; }
@@ -319,6 +323,7 @@ function cflcWidget(fig) {
     P.points(cs, Array.from(r.nu), { color: C[0], r: 2.2 });
     P.points([ch * 10 ** -3.4], [r.c0], { color: C[0], r: 4, hollow: true });
     const cp = cPlus();
+    P.points([ch * 10 ** cp.s], [cp.nu], { color: C[3], r: 4 });
     [[cSD(p), 'c_SD', C[2]], [ch, 'c_HU', C[1]], [ch * 10 ** cp.s, 'c_+', C[3]]].forEach(([cv, lab, col], i) => {
       P.vline(cv, { color: col, dash: [5, 4] });
       P.text(cv, ymax * (0.06 + 0.08 * i), lab, { color: col, align: 'left', dx: 3 });
@@ -326,8 +331,9 @@ function cflcWidget(fig) {
     P.vline(ch * 10 ** st.s, { color: T.ink, dash: [] , width: 1.2 });
     const nuSel = interp(st.s);
     out.set(`p = ${p}, ${RK_LABEL[st.rk]}\nν_max(c = 0, DG) = ${r.c0.toFixed(4)}\nν_max(c_SD)      ≈ ${interpC(cSD(p)).toFixed(4)}\n` +
-      `ν_max(c_HU)      ≈ ${interpC(ch).toFixed(4)}\nc_+ ≈ ${fmt(ch * 10 ** cp.s, 3)} (grid), ν_max = ${cp.nu.toFixed(4)}\nselected c = ${fmt(ch * 10 ** st.s, 3)}: ν_max ≈ ${nuSel.toFixed(4)}`);
+      `ν_max(c_HU)      ≈ ${interpC(ch).toFixed(4)}\nc_+ ≈ ${fmt(ch * 10 ** cp.s, 3)} = ${(10 ** cp.s).toFixed(2)} c_HU, ν_max = ${cp.nu.toFixed(4)}\nselected c = ${fmt(ch * 10 ** st.s, 3)}: ν_max ≈ ${nuSel.toFixed(4)}`);
     selfCheck('CFL(c+) > CFL(DG)', cp.nu > r.c0);
+    selfCheck('c+ > c_HU', cp.s > 0);
   }
   function interp(s) {
     const r = st.curve; if (!r) return 0;
@@ -413,6 +419,8 @@ function acccWidget(fig) {
     selfCheck('accuracy: errors finite', all.every(Number.isFinite));
   }
   s1.onResize(draw);
+  // immediate sanity check (the sweep itself runs asynchronously): the DG reference run is finite and accurate
+  selfCheck('accuracy: DG (c = 0) reference error is small', err(st.p, 8, 0) < 1e-3);
   compute();
 }
 
@@ -422,4 +430,4 @@ initChapter(() => {
   mount('w-frdg', frdgWidget);
   mount('w-cflc', cflcWidget);
   mount('w-accc', acccWidget);
-});
+}, { minChecks: 6 }); // distinct selfCheck labels recorded synchronously while mounting

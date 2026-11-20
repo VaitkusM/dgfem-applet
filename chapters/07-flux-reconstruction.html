@@ -88,7 +88,7 @@ $$g_{Ga} = \frac{(p+1)\,R_{R,p+1} + p\,R_{R,p}}{2p+1} = \frac{(-1)^p}{2}(1-\xi)\
 </div>
 <ul>
 <li>$g_{DG}$ reproduces DG (next section).</li>
-<li>$g_2$ allows a markedly larger time step than $g_{DG}$, and with GLL solution points it reproduces the DG spectral element method of chapter 6 (GLL collocation, lumped mass) — our tests
+<li>$g_2$ allows a markedly larger time step than $g_{DG}$, and with GLL solution points it reproduces the <span class="term" data-g="dgsem">DG spectral element method</span> of chapter 6 (GLL collocation, lumped mass) — our tests
 confirm this to round-off, for advection and for Burgers.</li>
 <li>$g_{Ga}$ vanishes at the $p$ Gauss points (the zeros of $P_p$) and at $\xi = 1$; the last expression follows from $\xi P_p = \frac{(p+1)P_{p+1} + pP_{p-1}}{2p+1}$.</li>
 </ul>
@@ -100,7 +100,8 @@ All curves pass through $(-1, 1)$ and $(1, 0)$. Tick "show $g_R$" to see the mir
 </figure>
 
 <h2 id="equivalence">Why $g_{DG}$ gives DG</h2>
-<p>Take the nodal DG method in <em>strong form</em> (integrate by parts twice) with the exact mass matrix and the flux interpolated at the solution points,
+<p>Take the nodal DG method in <span class="term" data-g="strongdg">strong form</span> (chapter 6: integrate by parts a second time, so that the derivative is back on the flux and each face contributes the mismatch
+between the common flux and the element's own flux) with the exact mass matrix and the flux interpolated at the solution points,
 $f_h = F^D$. For every test polynomial $v$ of degree $\le p$:</p>
 $$\frac h2\int_{-1}^1 \partial_t u_h\, v\dd\xi = -\int_{-1}^1 (F^D)'\, v\dd\xi + \big(\hat F_{k-\frac12} - F^D(-1)\big)\,v(-1) - \big(\hat F_{k+\frac12} - F^D(1)\big)\,v(1).$$
 <p>Now multiply the FR update $\partial_t u_h = -\frac2h F'$ by $\frac h2 v$ and integrate:</p>
@@ -117,35 +118,44 @@ different scheme (our tests show the difference for Burgers). In the same way on
 
 <figure class="widget" id="w-frdg">
 <figcaption><b>FR vs DG, side by side.</b> Both schemes start from the same projected data and take the same SSP-RK3 steps. Top: both solutions. Bottom: the pointwise
-difference $|u_{FR} - u_{DG}|$ on a logarithmic axis. With matching pairs — $g_{DG}$ vs strong-form DG with exact mass, or $g_2$ on GLL points vs DG-SEM — the difference
-stays at the level of round-off ($\sim 10^{-15}$); with any other pairing it is of the size of the discretisation error.</figcaption>
+difference $|u_{FR} - u_{DG}|$ on a logarithmic axis. With matching pairs — $g_{DG}$ vs strong-form DG with exact mass; $g_2$ on GLL points vs DG-SEM; and for advection also
+$g_{DG}$ vs weak-form DG and $g_2$ on <em>Gauss</em> points vs DG-SEM (a linear flux does not see the solution points) — the difference is round-off (typically $10^{-15}$ to $10^{-12}$) as long as the
+solution itself stays bounded; with any other pairing it is of the size of the discretisation error. There is no limiter: for Burgers' equation the solutions oscillate at the shock, and
+for some settings (mostly GLL points, $p \ge 3$) both blow up. Round-off differences are then amplified along with the solution, and the widget stops with a message once $|u| > 10$.</figcaption>
 </figure>
 
 <h2 id="vcjh">The VCJH family: one parameter, many schemes</h2>
-<p>Vincent, Castonguay and Jameson (2011) found a one-parameter family of correction functions for which the scheme is provably stable for linear advection:</p>
+<p>Vincent, Castonguay and Jameson (2011) found a one-parameter family (named <span class="term" data-g="vcjh">VCJH</span> after them and Huynh) of correction functions for which the scheme is provably stable for linear advection:</p>
 $$g_L = \frac{(-1)^p}{2}\Big[P_p - \frac{\eta_p\,P_{p-1} + P_{p+1}}{1+\eta_p}\Big],\qquad \eta_p = \frac{c\,(2p+1)\,(a_p\,p!)^2}{2},\qquad a_p = \frac{(2p)!}{2^p\,(p!)^2}.$$
 <p>One checks $g_L(-1) = 1$ and $g_L(1) = 0$ directly from $P_n(\pm1) = (\pm1)^n$. Special values of $c \ge 0$:</p>
 <table class="data">
 <tr><th>parameter</th><th>$\eta_p$</th><th>correction function</th></tr>
 <tr><td>$c = 0$</td><td>$0$</td><td>$g_{DG}$ (DG)</td></tr>
-<tr><td>$c_{SD} = \dfrac{2p}{(2p+1)(p+1)(a_p\,p!)^2}$</td><td>$\dfrac{p}{p+1}$</td><td>$g_{Ga}$ (a spectral difference scheme, Jameson 2010)</td></tr>
+<tr><td>$c_{SD} = \dfrac{2p}{(2p+1)(p+1)(a_p\,p!)^2}$</td><td>$\dfrac{p}{p+1}$</td><td>$g_{Ga}$ (a spectral difference scheme, see below)</td></tr>
 <tr><td>$c_{HU} = \dfrac{2(p+1)}{(2p+1)\,p\,(a_p\,p!)^2}$</td><td>$\dfrac{p+1}{p}$</td><td>$g_2$ (Huynh)</td></tr>
 <tr><td>$c \to \infty$</td><td>$\infty$</td><td>$R_{R,p}$ (degree only $p$)</td></tr>
 </table>
-<p>(The identities in the table are verified in our tests by comparing Legendre coefficients.) For $c \ge 0$ the schemes are energy stable for linear
-advection with an upwind flux — not in the plain $L^2$ norm but in a Sobolev-type norm that adds, on each element, $\tfrac c2$ times the squared $p$-th derivative
-$(\partial_\xi^p u_h)^2$ (in reference coordinates). Consistently, all eigenvalues of the semi-discrete operator have $\mathrm{Re}\,\lambda \le 0$ in our tests. VCJH schemes can also be read as DG with a
+<p>(The identities in the table are verified in our tests by comparing Legendre coefficients.) The <em>spectral difference</em> (SD) method (Liu, Vinokur &amp; Wang 2006) is another
+integral-free scheme: it stores $u_h$ at $p+1$ solution points and the flux at $p+2$ separate flux points (the two ends and $p$ interior points), and differentiates the flux polynomial. In 1D and for a linear flux,
+the SD scheme whose interior flux points are the $p$ Gauss points is FR with $g_{Ga}$ — the correction then leaves the flux at those points unchanged (Huynh 2007) — and Jameson (2010) proved this scheme stable. For $c \ge 0$ the VCJH schemes are energy stable for linear
+advection with an upwind flux — not in the plain $L^2$ norm but in a modified norm that also measures the highest derivative (a "Sobolev-type" norm):
+$$\|u_h\|_c^2 = \sum_k \frac h2\int_{-1}^{1}\Big[u_h^2 + \frac c2\,\big(\partial_\xi^p u_h\big)^2\Big]\dd\xi ,$$
+with the $p$-th derivative taken in the reference coordinate $\xi$ (it is a constant on each element, the leading coefficient of $u_h$ times $p!$). Our tests check the matrix version: for $c = 0, \tfrac12c_{HU}, c_{HU}, 10\,c_{HU}$ and
+$p = 1,\dots,4$ the rate of change of $\|u_h\|_c^2$ is a negative semidefinite quadratic form, whereas for $c &gt; 0$ the plain $L^2$ norm can grow momentarily. Consistently, all eigenvalues of the
+semi-discrete operator have $\mathrm{Re}\,\lambda \le 0$. VCJH schemes can also be read as DG with a
 modified mass matrix, or as a filtered DG method (Allaneau &amp; Jameson 2011).</p>
 
 <h3>Time step versus accuracy</h3>
 <p>Increasing $c$ changes the spectrum so that the largest stable CFL number grows,
-from $c = 0$ (DG) through $c_{SD}$ and $c_{HU}$ up to a maximum at some $c_+ &gt; c_{HU}$ (computed numerically by the widget below; it depends on the RK method),
-after which it decreases again. The price is accuracy: for $0 \le c \le 64\,c_{HU}$ the error grows monotonically with $c$ (tested for $p = 1,\dots,4$). In our tests, $c = 64\,c_{HU}$ is more
-than ten times less accurate than DG for $p = 3$ and $N = 16$, while $c = c_{HU}/2$ and $2c_{HU}$ still converge at the full rate $p+1$. (For very large $c$ the
+from $c = 0$ (DG) through $c_{SD}$ and $c_{HU}$ up to a maximum at some $c_+ &gt; c_{HU}$ (found by the widget below with a golden-section search; it depends on the RK method —
+e.g. $c_+ \approx 2.2\,c_{HU}$ for $p = 3$ with any of the three integrators offered, and $c_+ \approx 4.7$–$5.6\,c_{HU}$ for $p = 1$),
+after which it decreases again. (Tested for SSP-RK3, RK4 and the low-storage RK4.) The price is accuracy: for $0 \le c \le 64\,c_{HU}$ the error grows monotonically with $c$ (tested for $p = 1,\dots,4$). In our tests, $c = 64\,c_{HU}$ is more
+than ten times less accurate than DG for $p = 3$ and $N = 16$, while $c = c_{HU}/2$ and $2c_{HU}$ still converge at the full rate $p+1$ (tested for $p = 1,\dots,4$; for $p = 1$ only on
+meshes with $N \ge 32$). (For very large $c$ the
 behaviour on practical meshes becomes irregular; explore it in the accuracy widget.)</p>
 
 <figure class="widget" id="w-cflc">
-<figcaption><b>Stability vs $c$.</b> Left: the largest stable CFL number $\nu = |a|\Delta t/h$ (upwind flux, $N\to\infty$ by Bloch analysis) as a function of $c$, with
+<figcaption><b>Stability vs $c$.</b> Left: the largest stable CFL number $\nu = |a|\Delta t/h$ (upwind flux; spectrum for $N\to\infty$ by the <span class="term" data-g="bloch">Bloch/Fourier analysis</span> of chapter 6) as a function of $c$, with
 $c_{DG} = 0$ (left edge), $c_{SD}$, $c_{HU}$ and the maximiser $c_+$ marked. Right: the scaled spectrum $\nu_{\max}\lambda$ for the selected $c$ against the stability region:
 at the critical CFL some eigenvalues touch the boundary.</figcaption>
 </figure>
@@ -161,7 +171,8 @@ $\log_2(e_8/e_{16}) \approx p+1$ for moderate $c$; for large $c$ the error is la
 <ul>
 <li>Correction plotter: drag the VCJH slider from left to right and watch the curve move from $g_{DG}$ through $g_{Ga}$ ($c_{SD}$) and $g_2$ ($c_{HU}$) towards $R_{R,p}$.</li>
 <li>FR vs DG: choose $g_{DG}$ and "DG strong form, exact mass": round-off. Then switch the DG side to "DG weak form, over-integrated" with Burgers ($p = 3$) — the schemes differ.</li>
-<li>Choose $g_2$ with GLL points against DG-SEM: identical again.</li>
+<li>Back to advection: choose $g_2$ with GLL points against DG-SEM: identical again — and still identical with Gauss points, because a linear flux does not see the solution points.
+(With Burgers, GLL points and $p = 3$ the unlimited solution itself blows up and the widget stops.)</li>
 <li>Stability vs $c$ for $p = 3$: the gain from DG to $c_+$ is more than a factor of two in the time step.</li>
 </ul>
 </div>
@@ -172,7 +183,8 @@ $\log_2(e_8/e_{16}) \approx p+1$ for moderate $c$; for large $c$ the error is la
 <li><b>Comparing the wrong DG.</b> "FR with $g_{DG}$ equals DG" is only true for the matching variant (collocated flux, exact mass). Comparing against over-integrated
 DG for a nonlinear flux will show differences of the size of the discretisation error.</li>
 <li><b>Aliasing.</b> FR is a collocation method, so nonlinear fluxes are always aliased (like DG-SEM). Under-resolved simulations may need filtering or anti-aliasing.</li>
-<li><b>Shocks.</b> FR oscillates at discontinuities exactly like DG; it needs limiting or artificial viscosity.</li>
+<li><b>Shocks.</b> FR oscillates at discontinuities exactly like DG; it needs limiting or artificial viscosity. Without them the comparison widget above can blow up for Burgers' equation
+(it then stops and says so) — lowering the time step does not help.</li>
 <li><b>Too large $c$.</b> Bigger time steps are tempting, but beyond $c_+$ the CFL limit shrinks again, and the accuracy is worse than with DG.</li>
 </ul>
 </div>
@@ -190,13 +202,20 @@ DG for a nonlinear flux will show differences of the size of the discretisation 
 <p>For a linear flux the FR update does not even depend on where the solution points are: the flux interpolant is exact, so the evolving polynomial is the same
 for Gauss and for GLL points (our tests compare the two to round-off). The choice of points matters only for nonlinear fluxes (aliasing) and for cost.</p>
 
+<h3>Systems and several dimensions</h3>
+<p>Like DG, FR never uses that $u$ is a single number. For a system such as the Euler equations (chapter 6, section "Systems") the four steps are applied to every component:
+interpolate each component of $\mathbf F(\mathbf U)$ at the solution points, compute the common fluxes $\hat{\mathbf F}$ with a Riemann solver, add the <em>same</em> scalar correction
+functions $g_L$, $g_R$ to every component, and differentiate. The equivalence with strong-form DG (collocated flux) holds component by component, and the same limiting and positivity
+questions arise. On quadrilaterals and hexahedra FR is applied line by line along the tensor-product directions, exactly like DG-SEM in chapter 6; this structure is what PyFR
+runs on GPUs. (This course implements FR for scalar equations in 1D only; the Euler widget of chapter 6 uses weak-form DG.)</p>
+
 <h2 id="summary">Summary</h2>
 <ul>
 <li>FR evaluates the flux at solution points, corrects the discontinuous flux polynomial with $g_L$, $g_R$ so that it takes common values $\hat F$ at the faces, and differentiates.</li>
 <li>Correction functions: degree $p+1$, $g_L(-1) = 1$, $g_L(1) = 0$, $g_R(\xi) = g_L(-\xi)$; built from Radau polynomials.</li>
 <li>$g_{DG} = R_{R,p+1}$ recovers nodal DG (strong form, collocated flux) exactly; $g_2$ on GLL points recovers DG-SEM.</li>
 <li>The VCJH family ($c \ge 0$) is linearly stable; larger $c$ gives larger time steps up to $c_+$, at the cost of accuracy.</li>
-<li>FR is conservative, simple and cheap — and as oscillatory at shocks as DG.</li>
+<li>FR is conservative, simple and cheap — and as oscillatory at shocks as DG. It extends to systems component by component.</li>
 </ul>
 <p>Next, chapter 8 leaves hyperbolic problems: DG for elliptic equations, where there is no wind to upwind with.</p>
 
