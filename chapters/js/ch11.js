@@ -596,7 +596,7 @@ function cutfvWidget(fig) {
   const METHODS = { none: 'no fix', merge: 'cell merging', srd: 'state redistribution' };
   const BLOWUP = 1e6; // guard: stop the run when |U| exceeds this
   const st = { alpha: 0.1, nu: 0.8, method: 'none', N: 40, profile: 'square' };
-  let grid, sch, U, m0, n, hist, blown, lo, hi, frame = 0;
+  let grid, sch, U, m0, n, hist, blown, lo, hi, fac, untreated, runSteps, frame = 0;
   segmented(L.controls, {
     label: 'small-cell treatment', value: st.method,
     options: Object.entries(METHODS).map(([value, label]) => ({ value, label })),
@@ -625,11 +625,18 @@ function cutfvWidget(fig) {
     U = cellAverages(grid, PROFILES[st.profile].f);
     m0 = mass(grid, U); n = 0; blown = false; hist = [1]; lo = 0; hi = 1;
     hist[0] = Math.max(...U.map(Math.abs));
+    // regime of the small cell (monotone / bounded / marginal / unstable); it applies when the cell is not treated:
+    // "no fix", or state redistribution with α ≥ ½ (which leaves the cell alone)
+    fac = smallCellFactor(st.alpha, st.nu);
+    untreated = st.method === 'none' || (st.method === 'srd' && st.alpha >= 0.5);
+    // run length: two periods; an unstable run is extended (up to 400 steps) so that a slow blow-up becomes visible
+    runSteps = Math.ceil(2 / (st.nu * grid.h));
+    if (untreated && fac.regime === 'unstable') runSteps = Math.max(runSteps, Math.min(fac.stepsTo1e6 + 40, 400));
     draw();
   }
-  /** One time step; returns false when the run should stop (blow-up guard or two periods done). */
+  /** One time step; returns false when the run should stop (blow-up guard or run length reached). */
   function advance() {
-    if (blown || n * st.nu * grid.h >= 2) return false;
+    if (blown || n >= runSteps) return false;
     U = cutFvStep(sch, U, st.nu); n++;
     let m = 0;
     for (const v of U) { m = Math.max(m, Math.abs(v)); lo = Math.min(lo, v); hi = Math.max(hi, v); }
@@ -655,13 +662,13 @@ function cutfvWidget(fig) {
     P.line(xs, xs.map((x) => { const y = x - t; return f(y - Math.floor(y)); }), { color: T.ink, dash: [5, 4], width: 1.4 });
     P.legend([{ label: `${METHODS[st.method]}, step ${n}, t = ${fmt(t, 3)}`, color: C[0] }, { label: 'exact', color: T.ink, dash: [5, 4] }], 'tr');
     // history of max |U|
-    const fac = smallCellFactor(st.alpha, st.nu), unstable = st.method === 'none' || (st.method === 'srd' && st.alpha >= 0.5);
+    const growing = untreated && fac.regime === 'unstable', done = n >= runSteps;
     const nMax = Math.max(40, hist.length - 1);
     const Q = new Plot(s2, { xlim: [0, nMax], ylim: [0.5, BLOWUP], ylog: true, xlabel: 'step n' });
     Q.frame();
     Q.hline(1, { color: T.faint });
     Q.line(hist.map((_, k) => k), hist.map((v) => Math.min(v, BLOWUP)), { color: C[0], width: 2 });
-    if (st.method === 'none' && !fac.bounded) {
+    if (growing) {
       // slope of the predicted growth |1 − ν/α|ⁿ, anchored at the last computed point
       const g = Math.abs(fac.factor), kE = hist.length - 1, k0s = Math.max(0, kE - 12);
       if (kE > 0) Q.line([k0s, kE], [hist[kE] / g ** (kE - k0s), hist[kE]], { color: C[1], dash: [4, 4], width: 1.4 });
@@ -669,18 +676,27 @@ function cutfvWidget(fig) {
     } else Q.legend([{ label: 'max |U|', color: C[0] }], 'tl');
     const exact = cellAverages(grid, f, t);
     let l1 = 0; for (let i = 0; i < grid.n; i++) l1 += grid.w[i] * Math.abs(U[i] - exact[i]);
-    const verdict = !unstable ? (st.method === 'merge' ? 'merged cell: monotone for ν ≤ 1' : 'SRD: conservative, bounded (not monotone)')
-      : fac.monotone ? 'ν ≤ α: monotone, nothing to fix'
-        : fac.bounded ? 'α < ν < 2α: bounded, but over/undershoots' : 'ν > 2α: UNSTABLE, blows up';
+    const verdict = !untreated ? (st.method === 'merge' ? 'merged cell: monotone for ν ≤ 1' : 'SRD: conservative, bounded (not monotone)')
+      : {
+        monotone: 'ν ≤ α: monotone, nothing to fix',
+        bounded: 'α < ν < 2α: bounded, but over/undershoots',
+        marginal: 'ν = 2α: marginal (factor −1): the small\n  cell oscillates, no growth, no decay',
+        unstable: `ν > 2α: UNSTABLE, grows ×${fmt(-fac.factor, 4)} per step\n  (×10⁶ takes ≈ ${fac.stepsTo1e6} steps once the pulse\n  has reached the small cell)`,
+      }[fac.regime];
     out.set(`h = ${fmt(grid.h, 3)}, small cell: αh = ${fmt(st.alpha * grid.h, 2)}\n`
       + `local CFL in the small cell ν/α = ${fmt(st.nu / st.alpha, 3)}\n`
-      + (st.method === 'none' ? `its amplification 1 − ν/α = ${fmt(fac.factor, 3)}\n` : '')
+      + (untreated ? `its amplification 1 − ν/α = ${fmt(fac.factor, 4)}\n` : '')
       + (st.method === 'srd' && st.alpha >= 0.5 ? 'α ≥ ½: SRD leaves the cell alone\n' : '')
       + `${verdict}\n`
-      + `step ${n}:  min U = ${fmt(lo, 3)}, max U = ${fmt(hi, 3)}\n`
+      + `step ${n} of ${runSteps}:  min U = ${fmt(lo, 3)}, max U = ${fmt(hi, 3)}\n`
       + (blown ? `<b>stopped: |U| > 1e6 after ${n} steps</b>`
-        : `mass drift ${fmt(Math.abs(mass(grid, U) - m0), 2)}\nL¹ error ${fmt(l1, 3)}`));
+        : `mass drift ${fmt(Math.abs(mass(grid, U) - m0), 2)}\nL¹ error ${fmt(l1, 3)}`
+          + (growing && done ? `\n<b>run ended before |U| reached 10⁶</b>\n  (max |U| is now ${fmt(hist[hist.length - 1], 3)}: the growth by\n  ×${fmt(-fac.factor, 4)} per step is too slow for this run)` : '')));
     selfCheck('cutfv values finite or stopped by the guard', blown || U.every(Number.isFinite));
+    // the label must match what happens: only an untreated cell in the unstable regime may blow up,
+    // and a monotone run must respect the bounds of the initial data
+    selfCheck('cutfv: blow-up only in the regime labelled unstable', !blown || growing);
+    selfCheck('cutfv: runs labelled monotone stay within [0, 1]', !(untreated && fac.regime === 'monotone') || (lo >= -1e-9 && hi <= 1 + 1e-9));
   }
   s1.onResize(draw); s2.onResize(draw);
   reset();

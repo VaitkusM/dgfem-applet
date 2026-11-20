@@ -7,7 +7,8 @@ import { advection, burgers, buckley, burgersRiemann, scalarRiemann } from '../.
 import { makeStepper } from '../../lib/core/time/rk.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 
-const square = (x) => (x > 0.25 && x < 0.6 ? 1 : 0);
+// the jumps are declared, so cellAverages integrates piecewise (exact averages on any mesh)
+const square = Object.assign((x) => (x > 0.25 && x < 0.6 ? 1 : 0), { breaks: [0.25, 0.6] });
 const l1 = (u, v) => { let s = 0; for (let i = 0; i < u.length; i++) s += Math.abs(u[i] - v[i]); return s / u.length; };
 
 test('slope limiters σ(a, b) = φ(r)·b with r = a/b, and Sweby\'s TVD region 0 ≤ φ ≤ min(2r, 2)', () => {
@@ -125,7 +126,7 @@ test('scalar Riemann solver (convex hull): matches Burgers exactly, Welge tangen
 /* Regression tests added by the audit                                     */
 /* ---------------------------------------------------------------------- */
 import { maxWaveSpeed, rusanovFlux, godunovFlux } from '../../lib/core/models/scalar.js';
-import { coarsenAverages, reaStepExact, reaStepFormula } from '../../lib/core/fv/fv1d.js';
+import { coarsenAverages, reaStepExact, reaStepFormula, cellPieces, shiftedBreaks } from '../../lib/core/fv/fv1d.js';
 
 test('maxWaveSpeed: max |f\'| over the interval between two states (non-convex: interior maximum)', () => {
   const m = buckley(0.5);
@@ -195,7 +196,9 @@ test('Riemann problems with transmissive boundaries: the mass changes by exactly
     for (const [recon, method] of [['none', 'fe'], ['muscl', 'ssprk3']]) {
       const fv = makeFV1D({ model: m, N: 100, a: -1, b: 1, flux: 'godunov', recon, limiter: 'mc', bc: 'outflow' });
       const u = cellAverages((x) => (x < 0 ? uL : uR), fv.xf), m0 = u.reduce((a, b) => a + b, 0) * fv.h;
-      const T = 0.5 / maxWaveSpeed(m, uL, uR); // waves stay well inside (−1, 1)
+      const smax = maxWaveSpeed(m, uL, uR);
+      assert(smax > 0.5 && smax < 10, `${m.name}: wave speed ${smax}`); // a zero speed must fail here, not give T = ∞
+      const T = 0.5 / smax; // waves stay well inside (−1, 1)
       advanceFV1D(fv, u, T, 0.4, method);
       assertClose(u.reduce((a, b) => a + b, 0) * fv.h - m0, (m.f(uL) - m.f(uR)) * T, 1e-12, 0, `${m.name} ${uL}|${uR} ${recon}`);
     }
@@ -261,4 +264,94 @@ test('Godunov flux by sampling (non-convex f) agrees with Osher\'s min/max formu
     for (let k = 0; k <= 20000; k++) { const v = m.f(uL + (uR - uL) * k / 20000); best = uL <= uR ? Math.min(best, v) : Math.max(best, v); }
     assertClose(godunovFlux(m, uL, uR), best, 1e-4, 0, `${uL}|${uR}`);
   }
+});
+
+test('cellAverages with declared break points: exact averages of piecewise-smooth data on any mesh (square pulse N = 20…400)', () => {
+  const plain = (x) => (x > 0.25 && x < 0.6 ? 1 : 0); // the same pulse WITHOUT declared jumps
+  let worstPlain = 0;
+  for (let N = 20; N <= 400; N++) {
+    const xf = Float64Array.from({ length: N + 1 }, (_, i) => i / N), h = 1 / N;
+    const u = cellAverages(square, xf);
+    let mass = 0;
+    for (let i = 0; i < N; i++) {
+      mass += u[i] * h;
+      // exact average = covered fraction of the cell
+      const frac = Math.max(0, Math.min(xf[i + 1], 0.6) - Math.max(xf[i], 0.25)) / h;
+      assertClose(u[i], frac, 1e-13, 0, `N=${N} cell ${i}`);
+    }
+    assertClose(mass, 0.35, 1e-14, 0, `N=${N}: initial mass`);
+    worstPlain = Math.max(worstPlain, Math.abs(cellAverages(plain, xf).reduce((a, b) => a + b, 0) * h - 0.35));
+    // the pulse shifted by t (exact solution of advection): still exact, wherever the jumps are
+    const t = 0.123 + 0.01 * (N % 7), sh = (x) => square((((x - t) % 1) + 1) % 1);
+    assertClose(cellAverages(sh, xf, shiftedBreaks(square.breaks, t)).reduce((a, b) => a + b, 0) * h, 0.35, 1e-13, 0, `N=${N}: shifted mass`);
+  }
+  assert(worstPlain > 1e-3, `without break points the mass is wrong by up to ${worstPlain}`); // the old behaviour (N = 30: 4.7e-3)
+  // piecewise polynomial with a jump and a kink inside cells: exact
+  const f = Object.assign((x) => (x < 0.37 ? x ** 3 : x < 0.71 ? 2 - x * x : 2 - 0.71 ** 2 + 5 * (x - 0.71)), { breaks: [0.71, 0.37] });
+  const xf = Float64Array.from({ length: 8 }, (_, i) => i / 7);
+  const I = cellAverages(f, xf).reduce((a, b) => a + b, 0) / 7;
+  const exact = 0.37 ** 4 / 4 + (2 * (0.71 - 0.37) - (0.71 ** 3 - 0.37 ** 3) / 3) + (2 - 0.71 ** 2) * 0.29 + 2.5 * 0.29 ** 2;
+  assertClose(I, exact, 1e-14, 0, 'piecewise polynomial');
+  // smooth f: bit-identical to one 5-point Gauss rule per cell (backward compatible)
+  const gx = [-0.9061798459386640, -0.5384693101056831, 0, 0.5384693101056831, 0.9061798459386640];
+  const gw = [0.2369268850561891, 0.4786286704993665, 0.5688888888888889, 0.4786286704993665, 0.2369268850561891];
+  const g = (x) => Math.sin(3 * x) + x * x, a = cellAverages(g, xf);
+  for (let i = 0; i < 7; i++) {
+    const c = 0.5 * (xf[i] + xf[i + 1]), r = 0.5 * (xf[i + 1] - xf[i]); let s = 0;
+    for (let q = 0; q < 5; q++) s += gw[q] * g(c + r * gx[q]);
+    assert(a[i] === 0.5 * s, `smooth cell ${i} unchanged`);
+  }
+  // cellPieces: sorted, de-duplicated, only interior points
+  const pc = cellPieces(0, 1, [0.5, 2, 0.2, 0.5, 0, 1, -3]);
+  assert(pc.length === 4 && pc[0] === 0 && pc[1] === 0.2 && pc[2] === 0.5 && pc[3] === 1, `cellPieces ${pc}`);
+});
+
+test('exact Riemann solutions report their break points: averages of the exact solution conserve mass exactly', () => {
+  // Burgers shock 1|0 (speed ½) and Buckley–Leverett 1|0 (shock speed 1.366): ∫ u dx over (−1, 1) = 1 + f(uL) t
+  for (const [m, n] of [[burgers, 4000], [buckley(0.5), 20000]]) {
+    const R = scalarRiemann(m, 1, 0, n), T = 0.3;
+    assert(R.shocks.length >= 1 && R.breaks.length >= 2, 'a shock is reported');
+    assertClose(R.shocks[R.shocks.length - 1], m.name === 'burgers' ? 0.5 : 1.366, 2e-3, 0, `${m.name} shock speed`);
+    for (const N of [30, 100, 170]) {
+      const xf = Float64Array.from({ length: N + 1 }, (_, i) => -1 + 2 * i / N);
+      const mass = cellAverages((x) => R(x / T), xf, R.breaks.map((s) => s * T)).reduce((a, b) => a + b, 0) * 2 / N;
+      assertClose(mass, 1 + m.f(1) * T, m.name === 'burgers' ? 1e-12 : 2e-4, 0, `${m.name} N=${N}`); // BL fan: staircase of n samples
+    }
+  }
+  const fan = scalarRiemann(burgers, -1, 1, 2000);
+  assert(fan.shocks.length === 0, 'a pure rarefaction has no shock');
+  assertClose(fan.breaks[0], -1, 2e-3); assertClose(fan.breaks[fan.breaks.length - 1], 1, 2e-3);
+});
+
+test('advanceFV1D never hangs: it throws on a non-finite final time, on a blown-up solution and beyond maxSteps', () => {
+  const fv = makeFV1D({ model: advection(1), N: 20, flux: 'upwind' });
+  const throws = (fn, what) => { let ok = false; try { fn(); } catch (_) { ok = true; } assert(ok, `${what} must throw`); };
+  throws(() => advanceFV1D(fv, cellAverages(square, fv.xf), Infinity, 0.5, 'fe'), 'T = Infinity');
+  throws(() => advanceFV1D(fv, cellAverages(square, fv.xf), NaN, 0.5, 'fe'), 'T = NaN');
+  throws(() => advanceFV1D(fv, cellAverages(square, fv.xf), 1, 0, 'fe'), 'cfl = 0');
+  const fn = makeFV1D({ model: burgers, N: 20, flux: 'godunov' }); // nonlinear: the wave speed of NaN data is NaN
+  throws(() => advanceFV1D(fn, new Float64Array(20).fill(NaN), 1, 0.5, 'fe'), 'NaN data');
+  throws(() => advanceFV1D(fv, cellAverages(square, fv.xf), 1, 0.5, 'fe', 10), 'maxSteps = 10');
+  // Burgers data that blow up (central flux, forward Euler): ends with an exception or a finite step count
+  const fb = makeFV1D({ model: burgers, N: 40, flux: 'central' }), u = cellAverages((x) => Math.sin(2 * Math.PI * x), fb.xf);
+  let steps = -1; try { steps = advanceFV1D(fb, u, 50, 0.9, 'fe', 1e5).steps; } catch (_) { steps = 0; }
+  assert(steps >= 0 && steps <= 1e5, 'terminates');
+  // normal use is unchanged
+  assert(advanceFV1D(fv, cellAverages(square, fv.xf), 1, 0.5, 'fe').steps === 40, '40 steps at ν = ½ on 20 cells');
+});
+
+test('modified-equation widget numbers: ratio (distance to exact) : (distance to advection–diffusion) for N = 25, 100 and ν = 0.5, 0.95', () => {
+  // exactly what the chapter-5 widget computes: an integer number of forward-Euler steps to t = 1
+  const ratio = (N, nu0) => {
+    const fv = makeFV1D({ model: advection(1), N, flux: 'upwind' }), u = cellAverages(square, fv.xf), step = makeStepper('fe', N);
+    const n = Math.round(1 / (nu0 * fv.h)), dt = 1 / n, nu = dt / fv.h;
+    for (let k = 0; k < n; k++) step(u, k * dt, dt, fv.rhs);
+    const ad = cellAverages(diffusedSquare(0.25, 0.6, 1, upwindNumericalDiffusion(1, fv.h, nu), 1), fv.xf), ex = cellAverages(square, fv.xf);
+    return l1(u, ex) / l1(u, ad);
+  };
+  const r = [ratio(100, 0.5), ratio(25, 0.5), ratio(100, 0.95), ratio(25, 0.95)];
+  assert(r[0] > 650 && r[0] < 950, `N=100, ν=0.5: 1 : ${r[0]}`);   // caption: about 800
+  assert(r[1] > 300 && r[1] < 450, `N=25, ν=0.5: 1 : ${r[1]}`);    // caption: about 370 (0.25 is not a face: needs exact averages)
+  assert(r[2] > 9 && r[2] < 14, `N=100, ν≈0.95: 1 : ${r[2]}`);     // caption: about 11
+  assert(r[3] > 3 && r[3] < 5.5, `N=25, ν≈0.95: 1 : ${r[3]}`);     // caption: about 4
 });

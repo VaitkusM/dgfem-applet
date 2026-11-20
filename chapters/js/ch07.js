@@ -268,7 +268,7 @@ function frdgWidget(fig) {
     const match = frMatchesDG({ correction: st.corr, points: st.pts, dg: st.dgv, linear: st.eq === 'advection' });
     let txt = `t = ${st.t.toFixed(3)}\nmax |u_FR − u_DG| now   = ${blown ? '—' : fmt(mx, 2)}\nmax over the run so far = ${fmt(maxDiff, 2)}\nmax |u_FR| so far = ${fmt(peak, 3)}\n` +
       (match ? 'expected: identical schemes (difference = round-off,\namplified if the solution itself grows)' : 'expected: different schemes');
-    if (blown) txt += '\n<span class="status-bad">⚠ stopped: a solution blew up. Burgers without a limiter is unstable at the shock for this setting (aliasing of the collocated flux); the time step is below the linear limit, so a smaller Δt does not help.</span>';
+    if (blown) txt += '\n<span class="status-bad">⚠ stopped: a solution blew up. Burgers without a limiter is unstable at the shock for this setting (aliasing of the collocated flux). The time step is already within the linear stability limit; the reliable cure is a limiter, which this comparison deliberately omits. Reset restarts.</span>';
     out.set(txt);
     // identical schemes must agree to round-off as long as the solution stays in its initial range (|u| ≤ 1.3)
     if (match && !blown && peak < 2) selfCheck('FR = DG for matching pair', mx < 1e-10);
@@ -430,4 +430,4 @@ initChapter(() => {
   mount('w-frdg', frdgWidget);
   mount('w-cflc', cflcWidget);
   mount('w-accc', acccWidget);
-}, { minChecks: 6 }); // distinct selfCheck labels recorded synchronously while mounting
+}, { minChecks: 9 }); // ALL distinct selfCheck labels of the page (6 at mount + 3 from the asynchronous sweeps of w-cflc and w-accc, which finish before the self-test snapshot); removing any mount drops below 9

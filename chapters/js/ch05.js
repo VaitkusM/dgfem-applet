@@ -19,14 +19,14 @@ import { Plot } from '../../lib/viz/plot1d.js';
 import { Animator } from '../../lib/viz/anim.js';
 import { advection, burgers, buckley, burgersRiemann, scalarRiemann, maxWaveSpeed, SCALAR_FLUXES } from '../../lib/core/models/scalar.js';
 import {
-  makeFV1D, cellAverages, coarsenAverages, LIMITERS, LIMITER_PHI, advanceFV1D, totalVariation,
+  makeFV1D, cellAverages, shiftedBreaks, coarsenAverages, LIMITERS, LIMITER_PHI, advanceFV1D, totalVariation,
   upwindNumericalDiffusion, diffusedSquare, reaStepExact, reaStepFormula,
 } from '../../lib/core/fv/fv1d.js';
 import { makeStepper } from '../../lib/core/time/rk.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 import { EULER_FLUXES, primToCons, physFlux } from '../../lib/core/models/euler.js';
 import { exactRiemann } from '../../lib/core/models/eulerriemann.js';
-import { makeEuler1D, eulerCellAverages, eulerStats, SHOCK_TUBES } from '../../lib/core/fv/euler1d.js';
+import { makeEuler1D, eulerCellAverages, riemannBreaks, eulerStats, SHOCK_TUBES } from '../../lib/core/fv/euler1d.js';
 import { makeFV2D, cellAverages2D, zalesakDisk, rotationVelocity, rotated } from '../../lib/core/fv/fv2d.js';
 
 /** Play/pause + reset buttons wired to an Animator (returns the button row for extra buttons). */
@@ -37,6 +37,12 @@ function playControls(parent, anim, onReset) {
   anim.o.onState = (r) => play.setLabel(r ? '❚❚ Pause' : '▶ Play');
   return row;
 }
+
+/**
+ * The square pulse used by several widgets. Its jumps (`breaks`) are declared so that cellAverages integrates
+ * piecewise: the cell averages are then exact also when a jump lies inside a cell (0.25 is not a face for N = 30).
+ */
+const SQUARE = Object.assign((x) => (x > 0.25 && x < 0.6 ? 1 : 0), { breaks: [0.25, 0.6] });
 
 const LIMITER_OPTIONS = ['minmod', 'vanleer', 'mc', 'superbee', 'none'].map((k) => ({ value: k, label: LIMITERS[k].label }));
 
@@ -149,7 +155,7 @@ const MODELS = {
   bl: { label: 'Buckley–Leverett (M = ½)', model: buckley(0.5) },
 };
 const INITS = {
-  square: { label: 'square pulse (periodic)', periodic: true, u0: (x) => (x > 0.25 && x < 0.6 ? 1 : 0) },
+  square: { label: 'square pulse (periodic)', periodic: true, u0: SQUARE },
   sine: { label: 'sine wave (periodic)', periodic: true, u0: (x) => 0.5 + 0.5 * Math.sin(2 * Math.PI * x) },
   rA: { label: 'Riemann A: u_L = 1, u_R = 0', periodic: false, states: () => [1, 0] },
   rB: { label: 'Riemann B: u_L < u_R', periodic: false, states: (m) => (m === 'burgers' ? [-1, 1] : [0, 1]) },
@@ -188,14 +194,18 @@ function playgroundWidget(fig) {
     anim.pause();
     const m = MODELS[st.model].model, I = INITS[st.init];
     let u0, exact = null, a = 0, b = 1, uL = 0, uR = 0;
+    let exactBreaks = () => []; // positions of the jumps/kinks of the exact solution at time t (for exact cell averages)
     if (I.periodic) {
       u0 = I.u0;
-      if (st.model === 'adv') exact = (x, t) => I.u0((((x - t) % 1) + 1) % 1);
+      if (st.model === 'adv') { exact = (x, t) => I.u0((((x - t) % 1) + 1) % 1); exactBreaks = (t) => shiftedBreaks(I.u0.breaks || [], t); }
     } else {
       [uL, uR] = I.states(st.model); a = -1; b = 1;
-      u0 = (x) => (x < 0 ? uL : uR);
+      u0 = Object.assign((x) => (x < 0 ? uL : uR), { breaks: [0] });
       const R = st.model === 'burgers' ? (xi) => burgersRiemann(uL, uR, xi) : scalarRiemann(m, uL, uR, 4000);
+      // wave speeds: Burgers = one shock (u_L > u_R) or the two edges of the fan; otherwise from the convex hull
+      const speeds = st.model === 'burgers' ? (uL > uR ? [0.5 * (uL + uR)] : [uL, uR]) : R.breaks;
       exact = (x, t) => (t <= 0 ? u0(x) : R(x / t));
+      exactBreaks = (t) => speeds.map((sp) => sp * t);
     }
     const fv = makeFV1D({ model: m, N: st.N, a, b, flux: st.flux, recon: st.recon, limiter: st.limiter, bc: I.periodic ? 'periodic' : 'outflow' });
     const u = cellAverages(u0, fv.xf);
@@ -210,7 +220,7 @@ function playgroundWidget(fig) {
     const smax = maxWaveSpeed(m, uL, uR);
     const tEnd = I.periodic ? 20 : 0.8 / smax;
     const lo = Math.min(0, uL, uR), hi = Math.max(1, uL, uR), pad = 0.25 * (hi - lo);
-    sim = { m, fv, u, t: 0, steps: 0, exact, ref, tEnd, uL, uR, periodic: I.periodic, mass0: u.reduce((s, v) => s + v, 0) * fv.h,
+    sim = { m, fv, u, t: 0, steps: 0, exact, exactBreaks, ref, tEnd, uL, uR, periodic: I.periodic, mass0: u.reduce((s, v) => s + v, 0) * fv.h,
       tv0: totalVariation(u, I.periodic),
       step: makeStepper(st.rk, st.N), blown: false, ylim: [lo - pad, hi + pad] };
     anim.stepsPerFrame = Math.max(1, Math.min(20, Math.round(st.N / (st.cfl * 150))));
@@ -220,12 +230,13 @@ function playgroundWidget(fig) {
     const S = sim;
     if (S.blown || S.t >= S.tEnd - 1e-12) return false;
     const dt = Math.min(st.cfl * S.fv.h / Math.max(S.fv.maxSpeed(S.u), 1e-12), S.tEnd - S.t);
+    if (!(dt > 0)) { S.blown = true; return false; } // zero or NaN time step: nothing sensible can follow
     S.step(S.u, S.t, dt, S.fv.rhs); S.t += dt; S.steps++;
     let big = 0; for (let i = 0; i < S.u.length; i++) big = Math.max(big, Math.abs(S.u[i]));
     if (!(big < 1e6)) S.blown = true;
     if (S.ref) {
       const R = S.ref;
-      while (R.t < S.t - 1e-13) { const d = Math.min(0.4 * R.fv.h / Math.max(R.fv.maxSpeed(R.u), 1e-12), S.t - R.t); R.step(R.u, R.t, d, R.fv.rhs); R.t += d; }
+      while (R.t < S.t - 1e-13) { const d = Math.min(0.4 * R.fv.h / Math.max(R.fv.maxSpeed(R.u), 1e-12), S.t - R.t); if (!(d > 0)) break; R.step(R.u, R.t, d, R.fv.rhs); R.t += d; }
     }
     if (S.blown) return false;
   }
@@ -246,7 +257,7 @@ function playgroundWidget(fig) {
     let mass = 0, mn = Infinity, mx = -Infinity;
     for (let i = 0; i < fv.N; i++) { mass += S.u[i] * fv.h; mn = Math.min(mn, S.u[i]); mx = Math.max(mx, S.u[i]); }
     let l1 = NaN;
-    if (S.exact) { const ex = cellAverages((x) => S.exact(x, S.t), fv.xf); l1 = 0; for (let i = 0; i < fv.N; i++) l1 += Math.abs(S.u[i] - ex[i]) * fv.h; }
+    if (S.exact) { const ex = cellAverages((x) => S.exact(x, S.t), fv.xf, S.exactBreaks(S.t)); l1 = 0; for (let i = 0; i < fv.N; i++) l1 += Math.abs(S.u[i] - ex[i]) * fv.h; }
     else { l1 = 0; const rc = coarsenAverages(S.ref.u, fv.N); for (let i = 0; i < fv.N; i++) l1 += Math.abs(S.u[i] - rc[i]) * fv.h; }
     let cons;
     if (S.periodic) cons = `mass Σhūᵢ = ${mass.toFixed(12)}\n  change ${(mass - S.mass0).toExponential(1)} (periodic: 0)`;
@@ -293,7 +304,7 @@ function modEqWidget(fig) {
   slider(L.controls, { label: 'CFL number $\\nu$', min: 0.05, max: 1, step: 0.05, value: st.nu, onInput: (v) => { st.nu = v; draw(); } });
   slider(L.controls, { label: 'cells $N$', min: 25, max: 400, step: 25, value: st.N, onInput: (v) => { st.N = v; draw(); } });
   const out = readout(L.controls);
-  const sq = (x) => (x > 0.25 && x < 0.6 ? 1 : 0);
+  const sq = SQUARE;
   function draw() {
     const T = theme(), C = seriesColors();
     const fv = makeFV1D({ model: advection(1), N: st.N, flux: 'upwind' });
@@ -309,11 +320,12 @@ function modEqWidget(fig) {
     P.line(xs, ye, { color: T.faint, width: 1.4 });
     P.line(xs, ya, { color: C[1], width: 2.2, dash: [6, 3] });
     P.legend([{ label: 'upwind + forward Euler', color: C[0] }, { label: 'exact (advection)', color: T.faint }, { label: 'modified equation u_t + u_x = D u_xx', color: C[1], dash: [6, 3] }], 'tr');
-    const ex = cellAverages(sq, fv.xf), adc = cellAverages(ad, fv.xf);
+    const ex = cellAverages(sq, fv.xf), adc = cellAverages(ad, fv.xf, D === 0 ? sq.breaks : []); // D = 0: the pulse itself
     let e1 = 0, e2 = 0; for (let i = 0; i < st.N; i++) { e1 += Math.abs(u[i] - ex[i]) * fv.h; e2 += Math.abs(u[i] - adc[i]) * fv.h; }
     out.set(`h = ${fmt(fv.h)}, ν = ${fmt(nu, 4)}, ${n} steps\nD = (a h/2)(1 − ν) = ${fmt(D, 4)}\n\nL¹ distance to\n  exact solution   ${fmt(e1, 3)}\n  modified eq.     ${fmt(e2, 3)}${e1 > 0 && e2 > 0 ? `\n  ratio            1 : ${fmt(e1 / e2, 2)}` : ''}`);
-    // the modified equation is always the better model; for N ≥ 100 its error is at most 10% of the distance to the
-    // exact solution over the whole ν-range (≈ 0.1% at the default N = 100, ν = 0.5; tested in fv1d-hires.test.js)
+    // the modified equation is always the better model; measured over the whole slider range: its error is at most
+    // 9% (N ≥ 100) resp. 25% (N = 25) of the distance to the exact solution, the worst case being ν ≈ 0.95 where D
+    // is small (≈ 0.1% at the default N = 100, ν = 0.5; tested in fv1d-hires.test.js)
     selfCheck('modified equation predicts upwind', nu === 1 || e2 < (st.N >= 100 ? 0.1 : 0.5) * e1);
   }
   s1.onResize(draw);
@@ -323,11 +335,11 @@ function modEqWidget(fig) {
 /* ------------------------------------------------------------------ */
 /* W4: Sweby diagram + limiter test                                     */
 /* ------------------------------------------------------------------ */
-const SWEBY_PROFILE = (x) => {
+const SWEBY_PROFILE = Object.assign((x) => {
   if (x > 0.35 && x < 0.55) return 1;
   if (x > 0.7 && x < 0.9) return 1 - Math.abs(x - 0.8) / 0.1;
   return Math.exp(-300 * (x - 0.15) ** 2);
-};
+}, { breaks: [0.35, 0.55, 0.7, 0.8, 0.9] }); // jumps of the square, kinks of the triangle
 function swebyWidget(fig) {
   const L = widgetLayout(fig);
   const p1 = L.panel('limiter functions $\\varphi(r)$ and the TVD region');
@@ -404,13 +416,14 @@ function swebyWidget(fig) {
 /* ------------------------------------------------------------------ */
 /* W5: measured convergence rates                                       */
 /* ------------------------------------------------------------------ */
+const RATES_CHECK = 'rates: runs finite, exact initial mass, expected slopes';
 function ratesWidget(fig) {
   const L = widgetLayout(fig);
   const p1 = L.panel('$L^1$ error after one period vs cell size $h$ (log–log)');
   const s1 = createCanvas(p1, { aspect: 0.55 });
   p1.style.flex = '1 1 420px';
   const st = { data: 'smooth' };
-  const DATA = { smooth: (x) => Math.sin(2 * Math.PI * x), square: (x) => (x > 0.25 && x < 0.6 ? 1 : 0) };
+  const DATA = { smooth: (x) => Math.sin(2 * Math.PI * x), square: SQUARE };
   const METHODS = [
     { key: 'upwind', label: 'upwind (1st order)', recon: 'none', lim: 'minmod', rk: 'fe' },
     { key: 'none', label: 'MUSCL, no limiter', recon: 'muscl', lim: 'none', rk: 'ssprk3' },
@@ -464,11 +477,26 @@ function ratesWidget(fig) {
     const done = Object.keys(R).length;
     out.set(done < METHODS.length ? `computing… ${done}/${METHODS.length}` : `fitted slopes (last 3 grids):\n${METHODS.map((m) => `${m.label.padEnd(20)} ${R[m.key].rate.toFixed(2)}`).join('\n')}`);
     if (done === METHODS.length) {
-      if (st.data === 'smooth') selfCheck('rates: smooth MUSCL ≈ 2', R.none.rate > 1.8 && R.upwind.rate > 0.8);
-      else selfCheck('rates: square upwind ≈ ½', Math.abs(R.upwind.rate - 0.5) < 0.1);
+      // same label as the synchronous mount-time check below (a failure is sticky): the number of distinct
+      // checks of this page does not depend on whether the asynchronous study has finished at snapshot time
+      if (st.data === 'smooth') selfCheck(RATES_CHECK, R.none.rate > 1.8 && R.upwind.rate > 0.8);
+      else selfCheck(RATES_CHECK, Math.abs(R.upwind.rate - 0.5) < 0.1);
     }
   }
   s1.onResize(draw);
+  // synchronous mount-time check (the study itself runs asynchronously, method by method): one cheap pair of
+  // runs — first-order upwind on the square pulse, N = 25 and 50 — must give finite errors that decrease, and
+  // the initial mass of the pulse must be exact although 0.25 is not a cell face on these grids
+  {
+    const es = [25, 50].map((N) => {
+      const fv = makeFV1D({ model: advection(1), N, flux: 'upwind' }), u0 = cellAverages(SQUARE, fv.xf), u = Float64Array.from(u0);
+      advanceFV1D(fv, u, 1, 0.45, 'fe');
+      let e = 0, m = 0; for (let i = 0; i < N; i++) { e += Math.abs(u[i] - u0[i]) * fv.h; m += u0[i] * fv.h; }
+      return { e, m };
+    });
+    selfCheck(RATES_CHECK,
+      es.every((r) => Number.isFinite(r.e) && Math.abs(r.m - 0.35) < 1e-14) && es[1].e < es[0].e && es[1].e > 0);
+  }
   compute();
 }
 
@@ -494,7 +522,7 @@ function sodWidget(fig) {
   function reset() {
     const P = SHOCK_TUBES[st.tube];
     const fv = makeEuler1D({ N: st.N, flux: st.flux, recon: st.recon, limiter: st.limiter });
-    const U = eulerCellAverages((x) => (x < P.x0 ? P.WL : P.WR), fv.xf);
+    const U = eulerCellAverages((x) => (x < P.x0 ? P.WL : P.WR), fv.xf, undefined, [P.x0]);
     const ex = exactRiemann(P.WL, P.WR);
     // ranges for fixed axes: from the exact solution at the final time
     const rng = [[Infinity, -Infinity], [Infinity, -Infinity], [Infinity, -Infinity]];
@@ -563,7 +591,8 @@ function sodWidget(fig) {
     colorbar(s4.ctx, 'viridis', Q.px1 - 44, Q.py0 + 6, 8, 60, rlo, rhi, { ink: '#fff' });
     // diagnostics
     const sN = eulerStats(U, fv.h);
-    const R = eulerCellAverages((x) => (S.t > 0 ? ex.sample((x - P.x0) / S.t) : (x < P.x0 ? P.WL : P.WR)), fv.xf);
+    // exact cell averages of the exact solution: integrate piecewise between its shocks, contact and fan edges
+    const R = eulerCellAverages((x) => (S.t > 0 ? ex.sample((x - P.x0) / S.t) : (x < P.x0 ? P.WL : P.WR)), fv.xf, undefined, riemannBreaks(ex, P.x0, S.t));
     let l1 = 0; for (let i = 0; i < fv.N; i++) l1 += Math.abs(U[3 * i] - R[3 * i]) * fv.h;
     // with constant boundary states the totals change by (F_L − F_R) t exactly
     // … as long as the two cells next to each boundary (the flux stencil) still carry the initial states: the
@@ -606,7 +635,7 @@ function zalesakWidget(fig) {
     const n = st.n, box = [0, 1, 0, 1];
     const mk = (recon) => makeFV2D({ nx: n, ny: n, box, vel, recon, limiter: st.lim, bc: 'inflow' });
     const fa = mk('none'), fb = mk('muscl');
-    const u0 = cellAverages2D(zalesakDisk, n, n, box, 6);
+    const u0 = cellAverages2D(zalesakDisk, n, n, box, 4, 6); // cut cells refined 2⁶-fold: mass exact to < 1e-6
     const nSteps = Math.ceil(1 / fa.stableDt(0.45));
     // wrap the right-hand sides to record the boundary outflow of every RK stage; SSP-RK3 combines the
     // stages as u + Δt (L₀/6 + L₁/6 + 2L₂/3), so the mass that left the box in one step is Δt (o₀/6 + o₁/6 + 2o₂/3)
@@ -651,7 +680,7 @@ function zalesakWidget(fig) {
   function draw() {
     panel(sa, S.ua); panel(sb, S.ub);
     const t = S.k * S.dt, n = st.n;
-    const ex = cellAverages2D(rotated(zalesakDisk, omega, t), n, n, [0, 1, 0, 1], 4);
+    const ex = cellAverages2D(rotated(zalesakDisk, omega, t), n, n, [0, 1, 0, 1], 4, 4);
     const info = (u) => {
       let e = 0, lo = Infinity, hi = -Infinity, m = 0;
       for (let c = 0; c < u.length; c++) { e += Math.abs(u[c] - ex[c]); lo = Math.min(lo, u[c]); hi = Math.max(hi, u[c]); m += u[c]; }

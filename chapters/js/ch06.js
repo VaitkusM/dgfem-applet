@@ -27,7 +27,7 @@ import { exactRiemann } from '../../lib/core/models/eulerriemann.js';
 import { EULER_FLUXES } from '../../lib/core/models/euler.js';
 import { makeSlopeLimiter } from '../../lib/core/dg/limiters.js';
 import { makeDG2D } from '../../lib/core/dg/dg2d.js';
-import { operatorEigs, maxStableCFL, spectralRadius, dgStableCFL, containsImaginaryAxis, CFL_SAFETY } from '../../lib/core/dg/spectrum.js';
+import { operatorEigs, maxStableCFL, spectralRadius, dgStableCFL, containsImaginaryAxis, diagnoseBlowUp, CFL_SAFETY } from '../../lib/core/dg/spectrum.js';
 import { advection, burgers } from '../../lib/core/models/scalar.js';
 import { makeFV1D, cellAverages } from '../../lib/core/fv/fv1d.js';
 import { makeStepper, stabilityAmp, RK_LABEL } from '../../lib/core/time/rk.js';
@@ -73,6 +73,7 @@ function dg1dWidget(fig) {
   const s1 = createCanvas(p1, { aspect: 0.42 });
   const st = { p: 2, N: 16, eq: 'advection', init: 'sine', flux: 'upwind', quad: 'exact', lim: 'none', M: 50, frac: CFL_SAFETY, t: 0 };
   let dg, u, step, lim, m0, ref = null, troubled = 0, nuMax = 0, blown = false;
+  let fracMax = 0; // largest Δt/Δt_max actually used in the current run (the blow-up diagnosis must not use the slider)
   // Fluxes offered per equation. For advection Rusanov and Godunov coincide with upwind, so only upwind and
   // central are listed. For Burgers the "upwind" flux of scalar.js is Roe's flux WITHOUT entropy fix (it keeps
   // expansion shocks) and the central flux is nonlinearly unstable, so only the two entropy-stable fluxes are offered.
@@ -91,7 +92,7 @@ function dg1dWidget(fig) {
   select(L.controls, { label: 'quadrature', value: st.quad, options: [{ value: 'exact', label: 'exact (Gauss, full mass matrix)' }, { value: 'collocated', label: 'GLL collocation (DG-SEM, lumped)' }], onChange: (v) => { st.quad = v; build(); } });
   select(L.controls, { label: 'limiter', value: st.lim, options: [{ value: 'none', label: 'none' }, { value: 'minmod', label: 'minmod (M = 0)' }, { value: 'tvb', label: 'TVB minmod (M below)' }], onChange: (v) => { st.lim = v; build(); } });
   slider(L.controls, { label: 'TVB constant $M$', min: 0, max: 400, step: 5, value: st.M, onInput: (v) => { st.M = v; if (st.lim === 'tvb') build(); } });
-  slider(L.controls, { label: 'time step $\\Delta t/\\Delta t_{\\max}$', min: 0.1, max: 1.5, step: 0.05, value: st.frac, onInput: (v) => { st.frac = v; if (!blown) draw(); } });
+  slider(L.controls, { label: 'time step $\\Delta t/\\Delta t_{\\max}$', min: 0.1, max: 1.5, step: 0.05, value: st.frac, onInput: (v) => { st.frac = v; draw(); } });
   const anim = new Animator(fig, { step: () => advance(), draw: () => draw(), stepsPerFrame: 3 });
   playControls(L.controls, anim, () => { build(); });
   const out = readout(L.controls);
@@ -105,7 +106,7 @@ function dg1dWidget(fig) {
     if (lim) troubled = lim.apply(u); else troubled = 0;
     step = makeStepper('ssprk3', dg.n, lim ? (v) => { troubled = lim.apply(v); } : undefined);
     m0 = dg.mass(u);
-    st.t = 0; blown = false;
+    st.t = 0; blown = false; fracMax = 0;
     // largest stable CFL number of SSP-RK3 for this degree / flux / mass matrix (linear advection, N → ∞)
     nuMax = dgStableCFL(st.p, { flux: st.flux === 'central' ? 'central' : 'upwind', quad: st.quad });
     // Burgers reference: fine FV (MUSCL + MC limiter) advanced in lockstep
@@ -120,7 +121,9 @@ function dg1dWidget(fig) {
     return st.frac * nuMax * dg.h / s;
   }
   function advance() {
-    if (blown || st.t >= 4 - 1e-12) return false;
+    if (blown) build(); // Play after a blow-up restarts from the initial data with the current settings
+    if (st.t >= 4 - 1e-12) return false;
+    fracMax = Math.max(fracMax, st.frac);
     const dt = Math.min(dtNow(), 4 - st.t);
     step(u, st.t, dt, dg.rhs);
     st.t += dt;
@@ -161,15 +164,18 @@ function dg1dWidget(fig) {
     if (st.eq === 'advection') txt += `\nL² error = ${fmt(dg.l2Error(u, (x) => f0(x - st.t)), 3)}`;
     if (lim) txt += `\nlimited cells (last stage) = ${troubled}`;
     if (blown) {
-      // say truthfully WHY: only a time step above the limit is cured by lowering it
-      if (st.frac > 1) txt += warn('blew up: the time step is above the stability limit (Δt/Δt_max > 1) — lower it');
-      else if (st.eq === 'burgers' && st.quad === 'collocated' && !lim) txt += warn('blew up although Δt is below the linear limit: aliasing instability of unlimited GLL collocation at an under-resolved shock — use exact integration or a limiter (a smaller Δt does not help)');
-      else txt += warn('blew up although Δt is below the linear stability limit — nonlinear instability; switch on a limiter');
+      // say truthfully WHY, judged by the largest time step used in THIS run (diagnoseBlowUp is unit-tested)
+      const why = diagnoseBlowUp({ linear: st.eq === 'advection', frac: fracMax, collocated: st.quad === 'collocated', limited: !!lim });
+      const again = ' Press Play to restart with the current settings.';
+      if (why === 'timestep') txt += warn(`blew up: this run used a time step above the stability limit (Δt/Δt_max = ${fracMax.toFixed(2)} > 1). Lower the slider to 1 or less.${again}`);
+      else if (why === 'aliasing') txt += warn(`blew up although Δt never exceeded the linear limit: aliasing instability of unlimited GLL collocation at an under-resolved shock. Reliable cures: exact integration or a limiter (a smaller Δt sometimes delays or avoids it, sometimes not).${again}`);
+      else if (why === 'nonlinear') txt += warn(`blew up although Δt never exceeded the linear stability limit: nonlinear instability at the shock; switch on a limiter.${again}`);
+      else txt += warn(`blew up although Δt never exceeded the computed limit — this should not happen for linear advection (please report).${again}`);
     }
     out.set(txt);
     if (!blown && finite) selfCheck('dg1d mass conserved', Math.abs(mass - m0) < 1e-10);
     // the default time step must be stable for linear advection, whatever p / flux / mass matrix is chosen
-    if (st.eq === 'advection' && st.frac <= 1) selfCheck('dg1d: advection stable below the computed CFL limit', !blown);
+    if (st.eq === 'advection' && fracMax <= 1) selfCheck('dg1d: advection stable below the computed CFL limit', !blown);
   }
   s1.onResize(draw);
   build();
@@ -453,7 +459,8 @@ function dg2dWidget(fig) {
     const dt = Math.min(dg.dtStable(u, 0.5), P.T - st.t);
     step(u, st.t, dt, dg.rhs); st.t += dt;
     // guard: never keep animating garbage (a NaN would also make the next Δt NaN and the loop endless)
-    if (blownUp(u, 50) || !Number.isFinite(st.t)) { blown = true; return false; }
+    // (the data lie in [−0.2, 1.2]; |u| > 5 means the oscillations are out of control)
+    if (blownUp(u, 5) || !Number.isFinite(st.t)) { blown = true; return false; }
     return true;
   }
   function draw() {
@@ -470,8 +477,8 @@ function dg2dWidget(fig) {
     let txt = `t = ${st.t.toFixed(3)} / ${P.T}\nunknowns = ${dg.n} (${(st.p + 1) ** 2} per element)\nmass = ${mass.toFixed(12)}\ndrift = ${fmt(mass - m0, 2)}\nmin / max = ${fmt(umin)} / ${fmt(umax)}`;
     if (P.exact && !blown) txt += `\nL² error = ${fmt(dg.l2Error(u, (x, y) => P.exact(x, y, st.t)), 3)}`;
     if (blown) txt += warn(st.prob === 'burgers'
-      ? 'stopped: the unlimited scheme blew up at the shock (aliasing of GLL collocation, no limiter). The time step is below the linear limit — lower p instead.'
-      : 'stopped: the solution blew up');
+      ? 'stopped at |u| > 5 (the data lie in [−0.2, 1.2]): the oscillations of the unlimited scheme at the shock are out of control (GLL collocation, no limiter). The time step is within the linear limit; choose a lower degree p. Reset restarts.'
+      : 'stopped: the solution left the range |u| ≤ 5 (unexpected for linear advection). Reset restarts.');
     out.set(txt);
     if (!blown && Number.isFinite(mass)) selfCheck('dg2d mass conserved', Math.abs(mass - m0) < 1e-10);
     if (st.prob !== 'burgers') selfCheck('dg2d: linear advection never blows up', !blown);
@@ -488,7 +495,8 @@ function eulerWidget(fig) {
   const surfs = ['density $\\rho$', 'velocity $u$', 'pressure $p$'].map((t) => createCanvas(L.panel(t, '1 1 260px'), { aspect: 0.8 }));
   L.controls.classList.add('wide');
   const st = { prob: 'sod', p: 2, N: 40, flux: 'hllc', lim: 'minmod' };
-  // only settings that the tests sweep completely (tests/conv/dgeuler1d.test.js) are offered
+  // Offered settings and what tests/conv/dgeuler1d.test.js sweeps: Sod — every combination of p, flux, limiter and N
+  // of these controls; smooth wave — every p, flux and limiter on N = 10, 60, 160.
   const LIMS = [
     { value: 'minmod', label: 'minmod on (ρ, ρu, E), M = 0' },
     { value: 'tvb', label: 'TVB minmod, M = 50' },
@@ -519,7 +527,7 @@ function eulerWidget(fig) {
     const lim = makeEulerLimiter(dg, { limit: st.lim !== 'none', M: st.lim === 'tvb' ? 50 : 0 });
     lim.apply(U);
     const nu = CFL_SAFETY * dgStableCFL(st.p); // SSP-RK3 limit of upwind DG, with safety factor
-    S = { P, dg, U, lim, nu, t: 0, steps: 0, failed: false, nSq: 0, T0: dg.totals(U), ex: P.WL ? exactRiemann(P.WL, P.WR) : null,
+    S = { P, dg, U, lim, nu, t: 0, steps: 0, failed: false, timedOut: false, nSq: 0, T0: dg.totals(U), ex: P.WL ? exactRiemann(P.WL, P.WR) : null,
       step: makeStepper('ssprk3', dg.n, (V) => { lim.apply(V); S.nSq += lim.stats.squeezed; }) };
     // fixed axes from the exact solution at the final time (and the initial data)
     const rng = [[Infinity, -Infinity], [Infinity, -Infinity], [Infinity, -Infinity]];
@@ -529,16 +537,21 @@ function eulerWidget(fig) {
   }
   function advance() {
     if (S.failed || S.t >= S.P.T - 1e-13) return false;
+    S.timedOut = false;
     const dt = Math.min(S.nu * S.dg.h / S.dg.maxSpeed(S.U), S.P.T - S.t);
     S.step(S.U, S.t, dt, S.dg.rhs); S.t += dt; S.steps++;
     const m = S.dg.minima(S.U);
-    if (!m.finite || S.lim.stats.failed || !(m.rho > 0) || !(m.p > 0)) { S.failed = true; return false; }
+    // three distinct ways to fail; remember which, for an honest message
+    if (!m.finite) S.failed = 'a value became NaN or infinite';
+    else if (S.lim.stats.failed) S.failed = 'a cell average left the admissible set (ρ, p > 0), which the positivity fallback cannot repair';
+    else if (!(m.rho > 0) || !(m.p > 0)) S.failed = 'a nodal density or pressure is not positive after limiting';
+    if (S.failed) return false;
     return S.t < S.P.T - 1e-13;
   }
   function runToEnd() {
     anim.pause(); reset();
     const t0 = performance.now();
-    while (advance() !== false) if (performance.now() - t0 > 3000) break;
+    while (advance() !== false) if (performance.now() - t0 > 3000) { S.timedOut = true; break; } // slow machine: do not freeze the page
     draw();
   }
   function draw() {
@@ -575,13 +588,14 @@ function eulerWidget(fig) {
     const m = dg.minima(U), Tn = dg.totals(U), d = Tn.map((v, i) => v - S.T0[i]);
     const l1 = S.failed ? NaN : dg.l1Error(U, 0, (x) => exactAt(x, S.t)[0]);
     let txt = `t = ${S.t.toFixed(4)} / ${P.T}   steps = ${S.steps}\n` +
-      `Δt = ${CFL_SAFETY}·ν_max·h/max(|u|+c),  ν_max = ${dgStableCFL(st.p).toFixed(3)}\n` +
+      `Δt = ${CFL_SAFETY}·ν_max·h/max(|u|+c),  ν_max = ${dgStableCFL(st.p).toFixed(4)}\n` +
       `unknowns = ${dg.n}  (3 × ${dg.N} × ${dg.np})\n` +
       `L¹ error of ρ = ${fmt(l1, 3)}\nmin ρ = ${fmt(m.rho, 4)}, min p = ${fmt(m.p, 4)}\n` +
       `slope-limited cells (last stage) = ${lim.stats.limited}\npositivity fallbacks (whole run) = ${S.nSq}\n`;
     if (P.bc === 'periodic') txt += `drift of ∫ρ, ∫ρu, ∫E = ${d.map((v) => v.toExponential(1)).join(', ')}`;
     else txt += `change of ∫ρ = ${d[0].toExponential(1)}, of ∫E = ${d[2].toExponential(1)}\n(≈ 0 until a wave reaches the open ends)`;
-    if (S.failed) txt += warn('stopped: a cell average left the admissible set (ρ, p > 0) — this should not happen for the offered settings');
+    if (S.failed) txt += warn(`stopped: ${S.failed} — this should not happen for the offered settings (please report)`);
+    else if (S.timedOut) txt += warn(`computation paused after 3 s at t = ${S.t.toFixed(4)} (final time ${P.T} not reached) — press Play to continue`);
     out.set(txt);
     selfCheck('Euler DG: admissible state (ρ, p > 0, finite)', !S.failed);
     if (!S.failed && P.bc === 'periodic') selfCheck('Euler DG conserves mass, momentum, energy', Math.max(...d.map(Math.abs)) < 1e-11);
@@ -597,4 +611,4 @@ initChapter(() => {
   mount('w-spectrum', spectrumWidget);
   mount('w-dg2d', dg2dWidget);
   mount('w-dgeuler', eulerWidget);
-}, { minChecks: 9 }); // distinct selfCheck labels recorded synchronously while mounting
+}, { minChecks: 9 }); // all distinct selfCheck labels of the page, every one recorded synchronously at mount; removing any mount drops below 9

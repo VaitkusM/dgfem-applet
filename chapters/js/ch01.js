@@ -222,6 +222,22 @@ function charLinWidget(fig) {
     Q.line(xs, ys, { color: C[1], width: 2.2 });
     Q.legend([{ label: 'u₀(x)', color: T.faint, dash: [4, 4] }, { label: `u(x, ${st.t.toFixed(2)}) = u₀(x − a t)`, color: C[1] }]);
     out.set(`shift a·t = ${fmt(st.a * st.t)}\ncharacteristic slope dx/dt = a = ${fmt(st.a)}`);
+    // the plotted profile is finite, stays within the range of u0, and is the initial profile shifted by a·t:
+    // sample i of u(·,t) equals u0 at the foot x_i − a t of its characteristic (independent re-evaluation
+    // for the two smooth profiles; the square pulse is checked through its conserved "mass" ∫u dx = 0.3,
+    // as long as the pulse [0.15, 0.45] + a t lies inside the plotted window)
+    const dx = 2 / 600, shift = st.a * st.t;
+    let ok = ys.every((v) => Number.isFinite(v) && v >= -1e-12 && v <= 1 + 1e-12);
+    if (st.prof === 'square') {
+      const inside = 0.15 + shift > -0.5 + dx && 0.45 + shift < 1.5 - dx;
+      if (inside) ok = ok && Math.abs(ys.reduce((s, v) => s + v, 0) * dx - 0.3) <= 2 * dx;
+    } else {
+      for (let i = 0; i <= 600; i += 7) ok = ok && Math.abs(ys[i] - u0(xs[i] - shift)) < 1e-12 && Math.abs(y0[i] - u0(xs[i])) < 1e-12;
+      // transport does not change the maximum (while the bump is inside the window)
+      const imax = ys.indexOf(Math.max(...ys)), i0 = y0.indexOf(Math.max(...y0));
+      if (imax > 0 && imax < 600) ok = ok && Math.abs((xs[imax] - xs[i0]) - shift) <= 2 * dx + 1e-12;
+    }
+    selfCheck('linear advection: profile = u0(x − a t)', ok);
   }
   s1.onResize(draw); s2.onResize(draw);
   draw();

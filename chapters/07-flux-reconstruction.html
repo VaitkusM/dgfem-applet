@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>7. Flux reconstruction — Fluxes, DG &amp; friends</title>
 <link rel="stylesheet" href="../css/style.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<!-- media=print + onload: the CDN stylesheet must not block rendering or the page scripts if the CDN is slow -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous" media="print" onload="this.media='all'">
+<!-- the page module comes BEFORE the deferred CDN scripts so that a slow or hanging CDN cannot delay it -->
+<script type="module" src="js/ch07.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
-<script type="module" src="js/ch07.js"></script>
 <style>
   .widget-body > .controls.wide { flex: 1 1 100%; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .6rem 1.4rem; align-items: start; }
   .controls.wide .readout { grid-column: span 2; }
@@ -184,7 +186,7 @@ $\log_2(e_8/e_{16}) \approx p+1$ for moderate $c$; for large $c$ the error is la
 DG for a nonlinear flux will show differences of the size of the discretisation error.</li>
 <li><b>Aliasing.</b> FR is a collocation method, so nonlinear fluxes are always aliased (like DG-SEM). Under-resolved simulations may need filtering or anti-aliasing.</li>
 <li><b>Shocks.</b> FR oscillates at discontinuities exactly like DG; it needs limiting or artificial viscosity. Without them the comparison widget above can blow up for Burgers' equation
-(it then stops and says so) — lowering the time step does not help.</li>
+(it then stops and says so); its time step is already within the linear stability limit, so the cure is a limiter, not a smaller step.</li>
 <li><b>Too large $c$.</b> Bigger time steps are tempting, but beyond $c_+$ the CFL limit shrinks again, and the accuracy is worse than with DG.</li>
 </ul>
 </div>

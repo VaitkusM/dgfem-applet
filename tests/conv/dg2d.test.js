@@ -54,24 +54,37 @@ test('2D rotating blob: one revolution returns the blob, error decreases with p'
 /* ---- added by the chapter 6/7 audit ---- */
 import { blownUp } from '../../lib/core/dg/dg1d.js';
 
-/** The time loop of the chapter-6 2D widget for Burgers; returns the time of the first blow-up (or null). */
+/**
+ * The time loop of the chapter-6 2D widget for Burgers, including its guard (stop at |u| > 5).
+ * @returns {{stop: number|null, max: number}} time at which the guard fires (or null) and the largest |u| seen before
+ */
 function burgers2d(p, N, T = 0.4) {
   const dg = makeDG2D({ p, nx: N, ny: N, flux: 'rusanov', problem: 'burgers' });
   const u = dg.project((x, y) => 0.5 + 0.7 * Math.sin(TWO_PI * (x + y)));
   const step = makeStepper('ssprk3', dg.n);
-  let t = 0;
+  let t = 0, max = 0;
   while (t < T - 1e-12) {
     const dt = Math.min(dg.dtStable(u, 0.5), T - t);
     step(u, t, dt, dg.rhs); t += dt;
-    if (blownUp(u, 50)) return t;
+    if (blownUp(u, 5)) return { stop: t, max };
+    for (let i = 0; i < dg.n; i++) max = Math.max(max, Math.abs(u[i]));
   }
-  return null;
+  return { stop: null, max };
 }
 
-test('2D Burgers without limiter: bounded up to T = 0.4 for p ≤ 3 on every mesh of the widget; p = 5 blows up and the guard catches it', () => {
-  for (const p of [1, 2, 3]) for (const N of [3, 8, 16]) assert(burgers2d(p, N) === null, `p=${p} N=${N} blew up`);
-  const tb = burgers2d(5, 8);
-  assert(tb !== null && tb > 0.1137, `p=5 N=8: blow-up expected after the shock forms (t = 0.114), got ${tb}`);
+test('2D Burgers without limiter, every mesh of the widget (N = 3..16): p ≤ 3 stays within |u| ≤ 3.3; the guard |u| > 5 stops p = 4 for N = 8 and N ≥ 11 and p = 5 for N ≥ 4', () => {
+  for (const p of [1, 2, 3]) for (let N = 3; N <= 16; N++) {
+    const r = burgers2d(p, N);
+    assert(r.stop === null && r.max < 3.3, `p=${p} N=${N}: ${JSON.stringify(r)}`);
+  }
+  for (let N = 3; N <= 16; N++) {
+    const r4 = burgers2d(4, N), stops4 = N === 8 || N >= 11;
+    assert((r4.stop !== null) === stops4, `p=4 N=${N}: ${JSON.stringify(r4)}`);
+    const r5 = burgers2d(5, N);
+    assert((r5.stop !== null) === (N >= 4), `p=5 N=${N}: ${JSON.stringify(r5)}`);
+    // the guard never fires before the shock has formed (t = 1/(2.8π) ≈ 0.114), and a completed run stayed ≤ 5
+    for (const r of [r4, r5]) assert(r.stop === null ? r.max <= 5 : r.stop > 0.1137, `N=${N}: ${JSON.stringify(r)}`);
+  }
 });
 
 test('dtStable never returns NaN or 0 for finite data, and blownUp flags the state that would make it NaN', () => {

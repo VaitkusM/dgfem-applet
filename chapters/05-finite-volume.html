@@ -5,17 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>5. Finite volume methods — Fluxes, DG &amp; friends</title>
 <link rel="stylesheet" href="../css/style.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<!-- media=print + onload: the CDN stylesheet must not block rendering or the page scripts if the CDN is slow -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous" media="print" onload="this.media='all'">
+<!-- the page module comes BEFORE the deferred CDN scripts so that a slow or hanging CDN cannot delay it -->
+<script type="module" src="js/ch05.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
-<script type="module" src="js/ch05.js"></script>
 <style>
   /* chapter 5: two side-by-side panels of the 2D widget keep a square aspect */
   #w-zalesak .widget-body > .panel { flex: 1 1 260px; }
   #w-sod .widget-body > .panel { flex: 1 1 calc(50% - 1rem); min-width: 240px; }
 </style>
 </head>
-<body data-chapter="05" data-min-checks="7">
+<body data-chapter="05" data-min-checks="8">
 <main class="content">
 
 <h1><span class="chapnum">5</span>Finite volume methods</h1>
@@ -199,8 +201,8 @@ which is why the $L^1$ error of upwind for a discontinuity decreases only like $
 <figure class="widget" id="w-modeq">
 <figcaption><b>The modified equation in action.</b> The square pulse after one period ($t = 1$, $a = 1$) computed by upwind + forward Euler (bars), the exact
 solution (grey), and the exact solution of the <em>modified</em> advection–diffusion equation $u_t + u_x = D u_{xx}$ with $D = \frac h2(1-\nu)$, a sum of error functions (orange).
-For $N\gtrsim100$ the scheme follows the advection–diffusion curve almost perfectly (at $N = 100$, $\nu = 0.5$ the $L^1$ distance to it is about 800 times smaller than the distance to the exact solution);
-on coarse grids and for $\nu$ close to 1, where $D$ itself is small, the neglected $\mathcal O(h^2)$ dispersion term becomes visible. The readout compares the $L^1$ distances.</figcaption>
+The scheme follows the advection–diffusion curve almost perfectly (at $N = 100$, $\nu = 0.5$ the $L^1$ distance to it is about 800 times smaller than the distance to the exact solution, at $N = 25$ still about 370 times);
+only for $\nu$ close to 1, where $D$ itself is small, the neglected $\mathcal O(h^2)$ dispersion term becomes visible (at $\nu\approx0.95$ the ratio drops to about 1 : 11 for $N = 100$ and 1 : 4 for $N = 25$). The readout compares the $L^1$ distances.</figcaption>
 </figure>
 
 <h2 id="barrier">Godunov's order barrier</h2>

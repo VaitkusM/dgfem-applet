@@ -1,7 +1,7 @@
 import { test, assert, assertClose, assertRate } from '../harness.js';
 import { exactRiemann } from '../../lib/core/models/eulerriemann.js';
 import { EULER_FLUXES, physFlux, primToCons, consToPrim } from '../../lib/core/models/euler.js';
-import { makeEuler1D, eulerCellAverages, eulerStats, SHOCK_TUBES } from '../../lib/core/fv/euler1d.js';
+import { makeEuler1D, eulerCellAverages, riemannBreaks, eulerStats, SHOCK_TUBES } from '../../lib/core/fv/euler1d.js';
 import { makeStepper } from '../../lib/core/time/rk.js';
 import { fitRate } from '../../lib/core/verify/rates.js';
 
@@ -9,17 +9,18 @@ import { fitRate } from '../../lib/core/verify/rates.js';
 function shockTube(key, N, flux, recon, limiter = 'minmod', cfl = 0.5) {
   const P = SHOCK_TUBES[key];
   const fv = makeEuler1D({ N, flux, recon, limiter });
-  const U = eulerCellAverages((x) => (x < P.x0 ? P.WL : P.WR), fv.xf);
+  const U = eulerCellAverages((x) => (x < P.x0 ? P.WL : P.WR), fv.xf, undefined, [P.x0]);
   const step = makeStepper(recon === 'muscl' ? 'ssprk2' : 'fe', 3 * N);
-  let t = 0, ok = true;
+  let t = 0, ok = true, steps = 0;
   while (t < P.T - 1e-14) {
     const dt = Math.min(cfl * fv.h / fv.maxSpeed(U), P.T - t);
+    if (!(dt > 0) || !Number.isFinite(dt) || ++steps > 2e5) { ok = false; break; } // never hang: count as a failed run
     step(U, t, dt, fv.rhs); t += dt;
     const s = eulerStats(U, fv.h);
     if (!s.finite || s.minRho <= 0 || s.minP <= 0) { ok = false; break; }
   }
   const ex = exactRiemann(P.WL, P.WR);
-  const R = eulerCellAverages((x) => ex.sample((x - P.x0) / P.T), fv.xf);
+  const R = eulerCellAverages((x) => ex.sample((x - P.x0) / P.T), fv.xf, undefined, riemannBreaks(ex, P.x0, P.T));
   let err = 0;
   for (let i = 0; i < N; i++) err += Math.abs(U[3 * i] - R[3 * i]) * fv.h;
   return { U, fv, ex, err, ok };
@@ -144,8 +145,12 @@ test('MUSCL is second order on a smooth Euler density wave (exact solution = tra
       const fv = makeEuler1D({ N, flux: 'hllc', recon, limiter, bc: 'periodic' });
       const U = eulerCellAverages(W0, fv.xf), U0 = Float64Array.from(U);
       const step = makeStepper('ssprk3', 3 * N);
-      let t = 0;
-      while (t < 1 - 1e-14) { const dt = Math.min(0.4 * fv.h / fv.maxSpeed(U), 1 - t); step(U, t, dt, fv.rhs); t += dt; }
+      let t = 0, steps = 0;
+      while (t < 1 - 1e-14) {
+        const dt = Math.min(0.4 * fv.h / fv.maxSpeed(U), 1 - t);
+        assert(dt > 0 && Number.isFinite(dt) && ++steps < 1e5, `density wave: dt = ${dt} after ${steps} steps`);
+        step(U, t, dt, fv.rhs); t += dt;
+      }
       let e = 0; for (let i = 0; i < N; i++) e += Math.abs(U[3 * i] - U0[3 * i]) * fv.h;
       hs.push(fv.h); es.push(e);
       // periodic: totals conserved to round-off
@@ -174,4 +179,28 @@ test('sonic rarefaction: Roe\'s expansion shock does not shrink under refinement
     const j = [200, 400, 800].map((N) => jump(flux, N));
     assert(j[0] < 0.06 && j[1] < 0.6 * j[0] && j[2] < 0.65 * j[1], `${flux} kink ${j}`); // measured: halves with h
   }
+});
+
+test('eulerCellAverages with riemannBreaks: cell averages of the exact Sod solution satisfy the conservation laws', () => {
+  // ∫ U(x, T) dx = ∫ U(x, 0) dx + T (F(UL) − F(UR)) while the waves are inside (0, 1); needs exact averages in the
+  // cells that contain the shock and the contact, on meshes that are NOT aligned with them
+  const P = SHOCK_TUBES.sod, ex = exactRiemann(P.WL, P.WR), T = 0.2;
+  const UL = primToCons(...P.WL), UR = primToCons(...P.WR), FL = physFlux(UL, [0, 0, 0]), FR = physFlux(UR, [0, 0, 0]);
+  let worstPlain = 0;
+  for (const N of [50, 73, 200]) {
+    const xf = Float64Array.from({ length: N + 1 }, (_, i) => i / N), W = (x) => ex.sample((x - P.x0) / T);
+    const tot = (U) => [0, 1, 2].map((c) => { let s = 0; for (let i = 0; i < N; i++) s += U[3 * i + c] / N; return s; });
+    const a = tot(eulerCellAverages(W, xf, undefined, riemannBreaks(ex, P.x0, T))), b = tot(eulerCellAverages(W, xf));
+    for (let c = 0; c < 3; c++) {
+      const exact = 0.5 * UL[c] + 0.5 * UR[c] + T * (FL[c] - FR[c]);
+      assertClose(a[c], exact, 1e-7, 0, `N=${N} component ${c}`); // only the smooth fan is integrated approximately
+      worstPlain = Math.max(worstPlain, Math.abs(b[c] - exact));
+    }
+  }
+  assert(worstPlain > 1e-4, `without break points: ${worstPlain}`);
+  // initial data with the diaphragm inside a cell (N = 73): exact mass
+  const xf = Float64Array.from({ length: 74 }, (_, i) => i / 73);
+  const U0 = eulerCellAverages((x) => (x < 0.5 ? P.WL : P.WR), xf, undefined, [0.5]);
+  let m = 0; for (let i = 0; i < 73; i++) m += U0[3 * i] / 73;
+  assertClose(m, 0.5625, 1e-14, 0, 'initial mass');
 });

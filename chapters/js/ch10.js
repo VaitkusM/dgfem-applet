@@ -291,7 +291,7 @@ function schwarz2dWidget(fig) {
     const methodName = { multiplicative: 'multiplicative Schwarz (stationary)', 'asm-cg': 'additive Schwarz + CG', 'ras-gmres': 'restricted additive Schwarz + GMRES' }[st.method];
     P.legend([{ label: `${methodName}${st.coarse ? ', two-level' : ', one-level'}`, color: C[0] }], 'tr');
     let emax = 0; for (const v of E) emax = Math.max(emax, Math.abs(v));
-    out.set(`${R.part.subs.length} subdomains, H ≈ ${fmt(1 / Math.max(st.Kx, st.Ky))}, h = 1/${N}, δ = ${2 * st.ell}h\n` +
+    out.set(`${R.part.subs.length} subdomain${R.part.subs.length === 1 ? '' : 's'}, H ≈ ${fmt(1 / Math.max(st.Kx, st.Ky))}, h = 1/${N}, δ = ${2 * st.ell}h\n` +
       `coarse functions n_c = ${R.nc}\n` +
       `iterations to 1e-8: ${R.converged ? R.iters : `> ${R.iters}`}\n` +
       `n = ${st.n}: rel. residual ${fmt(H[st.n])}\n         max |error| ${fmt(emax)}` +

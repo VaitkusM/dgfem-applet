@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>9. Mixed methods &amp; hybridization — Fluxes, DG &amp; friends</title>
 <link rel="stylesheet" href="../css/style.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<!-- media=print + onload: the CDN stylesheet must not block rendering or the page scripts if the CDN is slow -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous" media="print" onload="this.media='all'">
+<!-- the page module comes BEFORE the deferred CDN scripts so that a slow or hanging CDN cannot delay it -->
+<script type="module" src="js/ch09.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
-<script type="module" src="js/ch09.js"></script>
 <style>
   svg.ch9-rt { display: block; margin: 0.6rem auto 0.2rem; width: 100%; max-width: 700px; height: auto; color: var(--ink); }
   svg.ch9-rt text { font: 14px var(--font-ui, sans-serif); fill: currentColor; }
@@ -19,7 +21,7 @@
   .ch9-caption { text-align: center; font-size: 0.92em; color: var(--ink-soft); margin-top: 0; }
 </style>
 </head>
-<body data-chapter="09" data-min-checks="8">
+<body data-chapter="09" data-min-checks="9">
 <main class="content">
 
 <h1><span class="chapnum">9</span>Mixed methods &amp; hybridization</h1>
@@ -66,8 +68,8 @@ $(\bsigma,\boldsymbol\tau) + (\nabla u,\boldsymbol\tau) = (\bsigma,\boldsymbol\t
 Multiply the conservation law by a scalar $v$. With $u = g$ on the boundary:</p>
 <div class="box def">
 $$\begin{aligned}
-(\bsigma, \boldsymbol\tau) - (u, \nabla\cdot\boldsymbol\tau) &= -\langle g, \boldsymbol\tau\cdot\n\rangle_{\partial\Omega} &&\text{for all }\boldsymbol\tau,\\
-(\nabla\cdot\bsigma, v) &= (f, v) &&\text{for all } v.
+&(\bsigma, \boldsymbol\tau) - (u, \nabla\cdot\boldsymbol\tau) = -\langle g, \boldsymbol\tau\cdot\n\rangle_{\partial\Omega} &&\text{for all }\boldsymbol\tau,\\
+&(\nabla\cdot\bsigma, v) = (f, v) &&\text{for all } v.
 \end{aligned}$$
 </div>
 <p>Notice the role reversal compared with chapters 2–4: the Dirichlet condition $u = g$ is now <span class="term" data-g="natural">natural</span>

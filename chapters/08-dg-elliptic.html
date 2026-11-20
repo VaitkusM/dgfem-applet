@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>8. DG for elliptic problems — Fluxes, DG &amp; friends</title>
 <link rel="stylesheet" href="../css/style.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<!-- media=print + onload: the CDN stylesheet must not block rendering or the page scripts if the CDN is slow -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous" media="print" onload="this.media='all'">
+<!-- the page module comes BEFORE the deferred CDN scripts so that a slow or hanging CDN cannot delay it -->
+<script type="module" src="js/ch08.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
-<script type="module" src="js/ch08.js"></script>
 <style>
   svg.ch8-faces { display: block; margin: 0.6rem auto 0.2rem; width: 100%; max-width: 560px; height: auto; color: var(--ink); }
   svg.ch8-faces text { font: 15px var(--font-ui, sans-serif); fill: currentColor; }
@@ -19,7 +21,7 @@
   .ch8-caption { text-align: center; font-size: 0.92em; color: var(--ink-soft); margin-top: 0; }
 </style>
 </head>
-<body data-chapter="08" data-min-checks="10">
+<body data-chapter="08" data-min-checks="12">
 <main class="content">
 
 <h1><span class="chapnum">8</span>DG for elliptic problems</h1>
@@ -261,7 +263,7 @@ gives a threshold that stays put when the mesh is refined <em>and</em> changes m
 <div class="box warn">
 <span class="box-title">What goes wrong</span>
 <ul>
-<li><b>Penalty too small</b> (SIPG/IIPG): the matrix is indefinite or even singular, the conjugate gradient method breaks down, and the solution can be garbage. Because the
+<li><b>Penalty too small</b> (SIPG/IIPG): the matrix is indefinite or even singular, the conjugate gradient method breaks down, and the error of $u_h$ is no longer controlled: it can be orders of magnitude larger than on a neighbouring mesh (the “try this” example above: $L^2$ error above $10$ for a solution of size $e\approx2.7$). Because the
 threshold depends on $p$ and on the element shapes (thin triangles have small $h_F$), a fixed $\sigma_F = 10/h_F$ that is safe
 for $p = 1, 2$ is no longer coercive for $p = 3$ (see the table in the widget above: without the $p$-factor the critical constant grows like $p(p+1)$).</li>
 <li><b>Penalty too large</b>: still convergent (the method is consistent), but the largest eigenvalues grow proportionally to $\sigma_F$, so the condition

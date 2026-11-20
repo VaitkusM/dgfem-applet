@@ -134,3 +134,41 @@ test('Euler limiter: keeps cell averages; linear data untouched; positivity fall
   F.apply(W);
   assert(F.stats.failed, 'negative mean density must be reported');
 });
+
+/* ---- round 3: the claims of the widget caption, at the widget's own settings (Δt = CFL_SAFETY·ν_max·h/max(|u|+c)) ---- */
+test('Euler widget, smooth wave, HLLC, widget time step: order p+1 only without interfering limiter; p = 3 loses order to the RK3 time error; minmod ≈ 2.3', () => {
+  const P = EULER_DG_PROBLEMS.wave;
+  const err = (p, N, lim) => { const r = run({ prob: 'wave', p, N, flux: 'hllc', lim }); assert(!r.bad, 'admissible'); return r.dg.l1Error(r.U, 0, (x) => P.exact(x, r.t)[0]); };
+  const order = (p, N, lim) => Math.log2(err(p, N, lim) / err(p, 2 * N, lim));
+  for (const lim of ['none', 'tvb']) {
+    assertRate(order(1, 20, lim), 2.1, `${lim} p=1`, 0.15, 0.15);
+    assertRate(order(2, 20, lim), 3.0, `${lim} p=2`, 0.15, 0.15);
+    assertRate(order(3, 20, lim), 3.85, `${lim} p=3, N = 20 → 40`, 0.15, 0.15);
+  }
+  assertRate(order(3, 80, 'none'), 3.2, 'p=3, N = 80 → 160 (time error dominates)', 0.15, 0.15);
+  assertRate(order(0, 80, 'none'), 0.9, 'p=0, N = 80 → 160', 0.1, 0.1);
+  // default limiter of the widget: minmod, M = 0
+  for (let p = 1; p <= 3; p++) assertRate(order(p, 40, 'minmod'), 2.3, `minmod p=${p}`, 0.15, 0.15);
+  assert(err(2, 40, 'minmod') > 1.5 * err(1, 40, 'minmod') && err(3, 40, 'minmod') > 1.5 * err(1, 40, 'minmod'), 'minmod: p = 2, 3 worse than p = 1');
+  // "Try this": p = 3, N = 20 — tiny error without limiter, more than four orders of magnitude worse with minmod
+  const e0 = err(3, 20, 'none');
+  assert(e0 < 4e-7 && err(3, 20, 'minmod') > 1e4 * e0, `p=3 N=20: ${e0} vs ${err(3, 20, 'minmod')}`);
+});
+
+test('Euler widget: Sod for EVERY offered combination (p = 0..3, 3 fluxes, 3 limiters, N = 10, 20, …, 160: 576 runs) stays admissible', () => {
+  let n = 0;
+  for (const flux of ['rusanov', 'hll', 'hllc']) for (const lim of ['none', 'minmod', 'tvb']) for (let p = 0; p <= 3; p++) for (let N = 10; N <= 160; N += 10) {
+    const r = run({ prob: 'sod', p, N, flux, lim });
+    assert(!r.bad && r.min.rho > 0 && r.min.p > 0, `${flux} ${lim} p=${p} N=${N}: failed at t=${r.t} (min ρ ${r.min.rho}, min p ${r.min.p})`);
+    n++;
+  }
+  assert(n === 576, 'sweep size');
+});
+
+test('Euler widget: smooth wave for every degree, flux and limiter on N = 10, 60, 160 stays admissible and conserves mass, momentum, energy', () => {
+  for (const flux of ['rusanov', 'hll', 'hllc']) for (const lim of ['none', 'minmod', 'tvb']) for (let p = 0; p <= 3; p++) for (const N of [10, 60, 160]) {
+    const r = run({ prob: 'wave', p, N, flux, lim });
+    assert(!r.bad && r.min.rho > 0.75 && r.min.p > 0.99, `${flux} ${lim} p=${p} N=${N}: min ρ ${r.min.rho}, min p ${r.min.p}`);
+    for (let c = 0; c < 3; c++) assertClose(r.T1[c], r.T0[c], 1e-11, 0, `${flux} ${lim} p=${p} N=${N} component ${c}`); // the widget's own tolerance
+  }
+});

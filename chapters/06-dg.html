@@ -5,10 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>6. Discontinuous Galerkin for conservation laws — Fluxes, DG &amp; friends</title>
 <link rel="stylesheet" href="../css/style.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<!-- media=print + onload: the CDN stylesheet must not block rendering or the page scripts if the CDN is slow -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous" media="print" onload="this.media='all'">
+<!-- the page module comes BEFORE the deferred CDN scripts so that a slow or hanging CDN cannot delay it -->
+<script type="module" src="js/ch06.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
-<script type="module" src="js/ch06.js"></script>
 <style>
   /* small matrix tables in the basis explorer */
   table.mat { border-collapse: collapse; font-family: var(--font-mono); font-size: 11.5px; margin: 4px 0 10px; }
@@ -131,7 +133,8 @@ The readout tracks the mass (conserved to round-off), the energy $\tfrac12\|u_h\
 <li>Switch to the <em>central</em> flux: the semi-discrete scheme conserves the energy, so it decays only slightly (through the damping of
 the RK method), and the wiggles spread over the whole domain.</li>
 <li>Burgers, square wave, $p = 4$, $N = 16$, no limiter: with exact quadrature the solution oscillates but stays bounded; switch to GLL collocation and it blows up
-(the run stops with a message) — this is the aliasing instability explained <a href="#quadrature">below</a>. Lowering the time step does not help; a limiter does.</li>
+(the run stops with a message) — this is the aliasing instability explained <a href="#quadrature">below</a>. With the Godunov flux, lowering the time step does not help here (blow-up at $t \approx 1.3$ for every
+$\Delta t/\Delta t_{\max}$ from $0.05$ to $1$ in our test); a limiter does. In other settings a smaller step can delay or avoid the blow-up, but it is not a cure one can rely on.</li>
 </ul>
 </div>
 
@@ -247,12 +250,12 @@ the largest stable values computed this way are:</p>
 <tr><td>0</td><td>forward Euler</td><td>1</td><td>first-order upwind FV</td></tr>
 <tr><td>0</td><td>SSP-RK3</td><td>1.256</td><td></td></tr>
 <tr><td>1</td><td>SSP-RK2</td><td>0.333</td><td>= 1/3, as listed by Cockburn–Shu</td></tr>
-<tr><td>1</td><td>SSP-RK3</td><td>0.409</td><td></td></tr>
-<tr><td>2</td><td>SSP-RK3</td><td>0.209</td><td>as listed by Cockburn–Shu</td></tr>
+<tr><td>1</td><td>SSP-RK3</td><td>0.410</td><td>0.4096; Cockburn–Shu list 0.409</td></tr>
+<tr><td>2</td><td>SSP-RK3</td><td>0.210</td><td>0.2098; Cockburn–Shu list 0.209</td></tr>
 <tr><td>3</td><td>SSP-RK3</td><td>0.130</td><td></td></tr>
 <tr><td>3</td><td>classical RK4</td><td>0.145</td><td></td></tr>
 </table>
-<p>For SSP-RK3 the product $\nu_{\max}\,(2p+1)$ is $1.23,\ 1.05,\ 0.91,\ 0.81,\ 0.73$ for $p = 1,\dots,5$, hence the rule of thumb $\Delta t \approx h/(|a|(2p+1))$.
+<p>(Values rounded to three decimals; the widgets print the same numbers with four.) For SSP-RK3 the product $\nu_{\max}\,(2p+1)$ is $1.23,\ 1.05,\ 0.91,\ 0.81,\ 0.73$ for $p = 1,\dots,5$, hence the rule of thumb $\Delta t \approx h/(|a|(2p+1))$.
 It is only a rule of thumb: the product keeps decreasing, so a fixed "safety factor" tuned at low degree fails at high degree — $\Delta t = 0.8\,h/(|a|(2p+1))$ is stable for
 $p \le 4$ and blows up for $p = 5$ (tested). Robust codes, and all widgets of this chapter, take $\nu_{\max}$ from the spectrum instead.
 Forward Euler is useless for DG with $p\ge1$: part of the spectrum hugs the imaginary axis, where $|1+z| > 1$. The lumped (GLL) mass matrix gives a
@@ -298,7 +301,7 @@ in our test ($p = 2$, $N = 16$, one period) $M = 20$ still clips the wave (error
 <li><b>Limiter everywhere:</b> with $M = 0$ the limiter fires at every smooth extremum, and a sine wave slowly turns into a trapezoid. Use TVB ($M&gt;0$) or a better troubled-cell indicator.</li>
 <li><b>Too large a time step:</b> DG's CFL limit shrinks roughly like $1/(2p+1)$: $\nu_{\max} = 0.130$ for $p = 3$ with SSP-RK3. The finite-volume habit $\nu \approx 0.9$ is seven times too
 large and explodes within three steps (set the time-step slider of the playground above $1$ to watch a milder version).</li>
-<li><b>Aliasing:</b> under-resolved nonlinear problems with collocation can blow up although the time step is fine; over-integrate, filter or limit. A smaller $\Delta t$ does not help.</li>
+<li><b>Aliasing:</b> under-resolved nonlinear problems with collocation can blow up although the time step is within the linear limit; over-integrate, filter or limit. A smaller $\Delta t$ is not a reliable cure (it helps for some data and not for others).</li>
 <li><b>Naive upwinding for nonlinear fluxes:</b> choosing the upwind side by an averaged speed admits expansion shocks; use a Riemann-solver flux (Godunov, Rusanov, HLL…).</li>
 <li><b>Central flux:</b> energy-conserving does not mean accurate — without dissipation the high-frequency errors never decay.</li>
 </ul>
@@ -318,8 +321,9 @@ on unstructured meshes one needs a face-to-element connectivity table instead.</
 <figcaption><b>2D DG on quads</b> (DG-SEM, Rusanov flux, SSP-RK3, periodic unit square). The colour is the true polynomial evaluated at every pixel, so you can
 see the small jumps across element edges (thin lines). The rotating blob makes one full revolution in $t = 1$; compare $p = 1$ and $p = 4$ on the same mesh.
 Burgers' equation $u_t + (u^2/2)_x + (u^2/2)_y = 0$ steepens a smooth wave into a shock along the diagonal at $t = 1/(2.8\pi) \approx 0.11$. There is <em>no limiter</em> here: watch the
-oscillations appear. For $p \le 3$ they stay bounded up to the final time (tested on the coarsest, the default and the finest mesh of the slider); for high degree ($p = 5$, or $p = 4$ on the finest mesh) the unlimited collocated
-scheme blows up after the shock has formed, and the widget stops with a message — a 2D instance of the aliasing problem above.</figcaption>
+oscillations appear. For $p \le 3$ they stay moderate up to the final time ($|u| \le 3.2$ on every mesh of the slider, $3 \le N \le 16$; tested). For higher degree the unlimited collocated
+scheme goes out of control after the shock has formed — a 2D instance of the aliasing problem above — and the widget stops with a message as soon as $|u| &gt; 5$: in our sweep this happens
+for $p = 4$ with $N = 8$ and $N \ge 11$, and for $p = 5$ on every mesh except $N = 3$.</figcaption>
 </figure>
 
 <h2 id="systems">Systems: DG for the Euler equations</h2>
@@ -348,17 +352,21 @@ minmod test, and then all three are reduced to their limited linear parts. Limit
 eigenvectors of $\mathbf F'(\mathbf U)$) is the classical refinement (Cockburn, Lin &amp; Shu 1989); it is sharper at contact discontinuities but more code.</li>
 <li><b>What if density or pressure become negative?</b> Then the sound speed $\sqrt{\gamma p/\rho}$ is not even defined. As a safeguard we check $\rho$ and $p$ at all nodes and quadrature points
 after every Runge–Kutta stage; where one of them falls below a tiny floor, the element's polynomial is squeezed towards its cell average,
-$\mathbf U_h \leftarrow \bar{\mathbf U} + \theta\,(\mathbf U_h - \bar{\mathbf U})$ with $0 \le \theta \le 1$ as large as possible ($\theta = 0$ is the first-order, piecewise-constant fallback).
+$\mathbf U_h \leftarrow \bar{\mathbf U} + \theta\,(\mathbf U_h - \bar{\mathbf U})$ with a factor $0 \le \theta \le 1$: first the largest $\theta$ that keeps $\rho$ above the floor (a linear condition, solved exactly), then, if $p$ is still too small, $\theta$ is halved until it is not
+(simple, and at most a factor two more cautious than the optimal value; $\theta = 0$ is the first-order, piecewise-constant fallback).
 The cell average is untouched, so conservation survives. This is the scaling idea of Zhang &amp; Shu (2010), who also prove under which time-step restriction the cell averages
-themselves stay positive. We do <em>not</em> prove that for our time step: the code checks it and stops if a cell average is inadmissible. For every setting of the widget below this never
-happens (tested: all degrees, fluxes, limiters and mesh sizes offered).</li>
+themselves stay positive. We do <em>not</em> prove that for our time step: the code checks it and stops if a cell average is inadmissible. In our tests this never happens for the widget below:
+the Sod problem is run for every combination of degree, flux, limiter and mesh size the controls offer (576 runs), the smooth wave for every degree, flux and limiter on the coarsest,
+a medium and the finest mesh ($N = 10, 60, 160$).</li>
 </ol>
 
 <figure class="widget" id="w-dgeuler">
 <figcaption><b>DG for the 1D Euler equations.</b> Density, velocity and pressure of the DG solution (one polynomial per element, alternating colours) against the exact solution (dashed).
 <em>Sod shock tube</em>: a membrane at $x = 0.5$ separates gas at rest with $(\rho, p) = (1, 1)$ from $(0.125, 0.1)$; at $t = 0.2$ a rarefaction fan, a contact discontinuity and a
-shock have formed (exact Riemann solution of chapter 5). <em>Smooth density wave</em>: $\rho = 1 + 0.2\sin 2\pi x$, $u = p = 1$ on a periodic domain, simply transported; here the
-error falls like $h^{p+1}$. Bars along the bottom of the density plot mark the elements changed by the slope limiter and by the positivity fallback in the last stage.
+shock have formed (exact Riemann solution of chapter 5). <em>Smooth density wave</em>: $\rho = 1 + 0.2\sin 2\pi x$, $u = p = 1$ on a periodic domain, simply transported. Here the $L^1$ error of $\rho$
+falls like $h^{p+1}$ — <em>provided the limiter does not interfere</em> ("none" or TVB): we measure orders $2.1$ and $3.0$ for $p = 1, 2$ ($N = 20 \to 40$); for $p = 3$ the order is $3.8$ there and
+drops to $3.2$ for $N = 80 \to 160$, because the third-order time stepping (SSP-RK3 with $\Delta t \propto h$) then dominates the error; $p = 0$ approaches order 1 slowly ($0.9$ at $N = 80 \to 160$).
+With the default minmod limiter ($M = 0$) the extrema are clipped and the order is only about $2.3$ for every $p \ge 1$, with <em>larger</em> errors for $p = 2, 3$ than for $p = 1$. Bars along the bottom of the density plot mark the elements changed by the slope limiter and by the positivity fallback in the last stage.
 SSP-RK3, limiter after every stage.</figcaption>
 </figure>
 
@@ -370,7 +378,7 @@ jump in $\rho$, invisible in $u$ and $p$) stays the most smeared wave.</li>
 <li>Switch the flux from HLLC to Rusanov, which ignores the contact wave: the contact gets a little wider (at $N = 40$ the $L^1$ error of $\rho$ grows by 10–15 %, for $p = 0$ and for $p = 2$ alike).</li>
 <li>Limiter "none": over- and undershoots at the shock and the contact, and the positivity fallback fires occasionally (the counter in the readout). The $L^1$ error is nevertheless
 <em>smaller</em> than with minmod, because minmod also flattens the smooth rarefaction.</li>
-<li>Smooth density wave, $p = 3$, $N = 20$: with "none" or TVB the error is tiny; minmod ($M = 0$) clips the extrema and loses orders of magnitude, as in the scalar case.</li>
+<li>Smooth density wave, $p = 3$, $N = 20$: with "none" or TVB the error is tiny ($3\cdot10^{-7}$); minmod ($M = 0$) clips the extrema and is worse by more than four orders of magnitude, as in the scalar case.</li>
 </ul>
 </div>
 

@@ -5,12 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>11. Immersed boundary methods — Fluxes, DG &amp; friends</title>
 <link rel="stylesheet" href="../css/style.css">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous">
+<!-- media=print + onload: the CDN stylesheet must not block rendering or the page scripts if the CDN is slow -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.css" integrity="sha384-5TcZemv2l/9On385z///+d7MSYlvIEw9FuZTIdZ14vJLqWphw7e7ZPuOiCHJcFCP" crossorigin="anonymous" media="print" onload="this.media='all'">
+<!-- the page module comes BEFORE the deferred CDN scripts so that a slow or hanging CDN cannot delay it -->
+<script type="module" src="js/ch11.js"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/katex.min.js" integrity="sha384-cMkvdD8LoxVzGF/RPUKAcvmm49FQ0oxwDF3BGKtDXcEc+T1b2N+teh/OJfpU0jr6" crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.22/dist/contrib/auto-render.min.js" integrity="sha384-hCXGrW6PitJEwbkoStFjeJxv+fSOOQKOPbJxSfM6G5sWZjAyWhXiTIIAmQqnlLlh" crossorigin="anonymous"></script>
-<script type="module" src="js/ch11.js"></script>
 </head>
-<body data-chapter="11" data-min-checks="13">
+<body data-chapter="11" data-min-checks="18">
 <main class="content">
 
 <h1><span class="chapnum">11</span>Immersed boundary methods</h1>
@@ -331,8 +333,11 @@ $$\hat U_s = \Big(1 - \frac{\nu}{\alpha}\Big)\,U_s^n + \frac{\nu}{\alpha}\,U_{s-
 $\Delta t\le\alpha h/a$: the smallest cell dictates the time step of the whole computation.</li>
 <li>$\alpha &lt; \nu &lt; 2\alpha$: the weight $1-\nu/\alpha$ is negative but larger than $-1$. The small cell over- and undershoots, yet the solution stays bounded.</li>
 <li>$\nu &gt; 2\alpha$: the old value of the small cell is multiplied by $1 - \nu/\alpha &lt; -1$ in every step. The scheme blows up exponentially with exactly this
-factor per step, and the garbage is advected into all cells downstream. With $\alpha = 0.1$ and $\nu = 0.8$ the factor is $-7$.</li>
+factor per step, and the growing, sign-alternating values of the small cell enter its right neighbour through the flux $a\,U_s$ and are advected into all cells downstream. With $\alpha = 0.1$ and $\nu = 0.8$ the factor is $-7$.</li>
 </ul>
+<p>The borderline $\nu = 2\alpha$ (factor exactly $-1$) is a marginal case: for $\nu &lt; 1$ the solution stays bounded (tested), but the deviation of the small cell from its left
+neighbour changes sign in every step without getting smaller as long as that neighbour is constant. Just above it the growth is real but slow: $|1-\nu/\alpha|^n$ reaches $10^6$ only after
+$\ln 10^6/\ln|1-\nu/\alpha|$ steps, counted from the moment the solution in the small cell is first disturbed. The widget prints this number.</p>
 <p>Note that the scheme stays <em>conservative</em> throughout: the fluxes telescope, and the total mass $\sum_i h_iU_i$ is exact to round-off even while the
 solution explodes. Conservation alone does not give stability. Two cures let us keep the full-cell time step. Both are written as a
 <em>postprocessing</em> of the provisional values $\hat U_i$:</p>
@@ -361,14 +366,16 @@ second order; we show only the piecewise-constant version.</p>
 <figcaption><b>The small-cell problem of explicit cut-cell finite volumes.</b> Upwind scheme for $u_t + u_x = 0$ on a periodic grid with one small cell
 (orange line; the purple band is its merging neighbourhood). Top: cell averages and the exact solution. Bottom: $\max_i|U_i^n|$ on a logarithmic scale; for the
 unstable scheme the dashed line has the predicted slope $|1-\nu/\alpha|$ per step. Press play with "no fix" ($\alpha = 0.1$, $\nu = 0.8$): the run is stopped when
-$|U|$ exceeds $10^6$, after 10 steps. Then try the two fixes at the same $\nu$, and move $\alpha$ down to $10^{-3}$: nothing changes for them.</figcaption>
+$|U|$ exceeds $10^6$, after 10 steps. (A run lasts two periods; an unstable one is extended to at most 400 steps so that a slow blow-up can show.) Then try the two fixes at the same $\nu$, and move $\alpha$ down to $10^{-3}$: nothing changes for them.</figcaption>
 </figure>
 
 <div class="box try">
 <span class="box-title">Try this</span>
 <ul>
 <li>"No fix", $\alpha = 0.5$: slide $\nu$ from 0.4 (monotone) to 0.9 (bounded, but the square pulse overshoots by about 30 %).
-Then $\alpha = 0.3$ and $\nu = 0.65$: just beyond $2\alpha$, a slow blow-up with factor $-1.17$ per step that takes about 100 steps to reach $10^6$.</li>
+Then $\alpha = 0.3$ (the slider gives 0.302) and $\nu = 0.65$: just beyond $2\alpha$, a slow blow-up with factor $-1.15$ per step that takes 113 steps to reach $10^6$.</li>
+<li>"No fix", $\alpha = 0.1$ and $\nu = 0.2$: the marginal case $\nu = 2\alpha$. Nothing grows, but a small oscillation behind the small cell never dies out.
+Now $\alpha = 0.45$ and $\nu = 0.9$ (factor $-1.015$): unstable, but $10^6$ would take about 940 steps. The run stops after 400 and the read-out says so.</li>
 <li>State redistribution with $\alpha$ just above $\tfrac12$ and $\nu = 0.9$: the cell counts as "large enough" and is left alone, and the same overshoot
 appears. The threshold $\tfrac12$ guarantees boundedness, not monotonicity.</li>
 <li>Compare cell merging and state redistribution on the smooth bump: the $L^1$ errors in the read-out are almost the same, and both are dominated by the
@@ -394,7 +401,7 @@ neighbours, and the <b>h-box method</b> (Berger, Helzel &amp; LeVeque 2003), whi
 Alternatives penalise, on the patch $K^-\cup K^+$ of the two elements sharing a face, the difference between the two neighbouring polynomials extended to the whole
 patch; this needs no derivatives and is convenient for high order. Ghost penalty, aggregation/extension and tailored preconditioners are compared in the review of
 de Prenter, Verhoosel, van Brummelen, Larson &amp; Badia (2023).</li>
-<li><b>SBM extensions.</b> Part I of Main &amp; Scovazzi already treats the Stokes problem and embedded Neumann conditions (its Section 4); Part II covers
+<li><b>SBM extensions.</b> Part I of Main &amp; Scovazzi already treats embedded Neumann conditions (its Section 4) and the Stokes problem (its Sections 6 and 7); Part II covers
 advection–diffusion and Navier–Stokes. The "second-generation" SBM of Atallah, Canuto &amp; Scovazzi (2020) simplifies the formulation (no tangential stabilisation
 term, no assumption that the true and the surrogate normals enclose an acute angle) and proves stability and convergence for the Poisson and Stokes problems.
 Their high-order SBM (2022) retains optimal accuracy for finite elements of any order although the surrogate boundary stays piecewise linear, and
@@ -483,7 +490,7 @@ remedies, <em>Arch. Comput. Methods Eng.</em> 30 (2023), 3617–3656.</li>
 <em>Int. J. Numer. Meth. Engng.</em> 110 (2017).</li>
 <li>M. J. Berger, C. Helzel, R. J. LeVeque, H-box methods for the approximation of hyperbolic conservation laws on irregular grids, <em>SIAM J. Numer. Anal.</em> 41 (2003).</li>
 <li>M. Berger, A. Giuliani, A state redistribution algorithm for finite volume schemes on cut cell meshes, <em>J. Comput. Phys.</em> 428 (2021).</li>
-<li>M. J. Berger, A note on the stability of cut cells and cell merging, <em>Appl. Numer. Math.</em> 96 (2016), 180–186.</li>
+<li>M. J. Berger, A note on the stability of cut cells and cell merging, <em>Appl. Numer. Math.</em> 96 (2015), 180–186.</li>
 <li>I.-L. Chern, P. Colella, A conservative front tracking method for hyperbolic conservation laws, Technical Report UCRL-97200, Lawrence Livermore National Laboratory (1987).</li>
 </ul>
 

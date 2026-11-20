@@ -59,3 +59,46 @@ test('smallestEigenvalueSym: zero leading pivot ([[0,1],[1,0]]) and 1×1 matrice
   assertClose(smallestEigenvalueSym(denseToCsr(Float64Array.of(-2.5), 1)).value, -2.5, 1e-5);
   assertClose(smallestEigenvalueSym(denseToCsr(Float64Array.of(4), 1)).value, 4, 1e-5);
 });
+
+// ---- the certificate itself: cases in which the Lanczos value is NOT λ_min ---------------------------------
+/** diag(d) as CSR */
+const diag = (d) => { const B = new SparseBuilder(d.length, d.length, d.length); d.forEach((v, i) => B.add(i, i, v)); return B.toCSR(); };
+/** spectra spanning many orders of magnitude, λ_min in different positions: [matrix, λ_min] */
+const hardCases = () => {
+  const n = 300, lin = (i) => 1 + (1e4 - 1) * i / (n - 1);
+  return [
+    [diag(Array.from({ length: n }, (_, i) => (i === 211 ? -0.37 : lin(i)))), -0.37],          // indefinite, one negative
+    [diag(Array.from({ length: n }, (_, i) => (i === 5 ? 3e-3 : lin(i)))), 3e-3],              // SPD, tiny λ_min
+    [diag(Array.from({ length: n }, (_, i) => (i % 7 === 3 ? -50 - i : lin(i)))), -50 - 297],  // many negatives
+  ];
+};
+
+test('smallestEigenvalueSym: with a Krylov dimension of 1 or 2 the Lanczos value is wrong — the count certificate detects it and bisection corrects it', () => {
+  let nFallback = 0;
+  for (const [A, ex] of hardCases()) for (const k of [1, 2]) {
+    // what the routine would return if it trusted Lanczos: the k-step shift-invert value is far from λ_min …
+    const r = smallestEigenvalueSym(A, { k });
+    // … yet the result is right, certified, and the bounds are tight and valid
+    assert(r.certified, `k=${k} λ_min=${ex}: certified`);
+    // documented accuracy: max(tol·|λ_min|, 1e-11·‖A‖_∞) with tol = 1e-6 and ‖A‖_∞ = 1e4 here
+    const acc = Math.max(1e-6 * Math.abs(ex), 1e-7);
+    assertClose(r.value, ex, 1.01 * acc, 0, `k=${k}`);
+    assert(r.lower <= ex && ex <= r.upper && r.upper - r.lower <= 2.01 * acc, `k=${k}: bounds [${r.lower}, ${r.upper}] around ${ex}`);
+    if (r.counts > 8) nFallback++; // more counts than search + certificate need ⇒ the bisection fallback ran
+  }
+  assert(nFallback >= 3, `the bisection fallback was exercised in ${nFallback} of 6 cases`);
+});
+
+test('smallestEigenvalueSym: if bisection is cut short the result is NOT certified, but lower ≤ λ_min ≤ upper still holds', () => {
+  let nUncertified = 0;
+  for (const [A, ex] of hardCases()) for (const maxBisect of [0, 2, 5]) {
+    const r = smallestEigenvalueSym(A, { k: 1, maxBisect });
+    assert(r.lower <= ex && ex <= r.upper, `maxBisect=${maxBisect}: bounds [${r.lower}, ${r.upper}] must contain ${ex}`);
+    assert(r.lower <= r.value && r.value <= r.upper, 'value inside its bounds');
+    // certified must mean "bounds tight": never certified with a wide bracket
+    const tight = r.upper - r.lower <= 2 * Math.max(1e-6 * Math.max(Math.abs(r.lower), Math.abs(r.upper)), 1e-11 * 1e4) * (1 + 1e-6);
+    assert(r.certified === tight, `maxBisect=${maxBisect}: certified=${r.certified} but bracket width ${r.upper - r.lower}`);
+    if (!r.certified) nUncertified++;
+  }
+  assert(nUncertified >= 6, `the uncertified path was exercised ${nUncertified} times`);
+});

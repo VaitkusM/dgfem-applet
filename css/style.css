@@ -246,7 +246,11 @@ button.btn:disabled { opacity: .5; cursor: default; }
 .katex { font-size: 1.05em; position: relative; }
 /* (position: relative: KaTeX hides its MathML copy with position:absolute; without a positioned
    ancestor inside the scrolling box, a wide formula's hidden copy would widen the whole page) */
-.katex-display { overflow-x: auto; overflow-y: hidden; padding: .2rem 0; }
+.katex-display { overflow-x: auto; overflow-y: hidden; padding: .2rem 0 .35rem; scrollbar-width: thin; scrollbar-color: var(--ink-faint) transparent; }
+.katex-display::-webkit-scrollbar { height: 5px; }
+.katex-display::-webkit-scrollbar-thumb { background: var(--ink-faint); border-radius: 3px; }
+/* set by markScrollableMath (lib/ui/chapter.js) while part of the formula is hidden on the right */
+.katex-display.math-scrolls { border-right: 3px dashed var(--accent-2); }
 .ctl-label .katex, .canvas-label .katex { font-size: 1em; }
 
 footer.site { max-width: var(--measure); margin: 4rem auto 0; color: var(--ink-faint); font: 12.5px var(--font-ui); }

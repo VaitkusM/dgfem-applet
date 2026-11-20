@@ -13,6 +13,7 @@ function run(opts, N, T = 0.5, cfl = 0.4) {
   let t = 0;
   const step = makeStepper('ssprk3', N, (v) => d.enforce(v, t));
   const dt0 = cfl * d.h;
+  assert(dt0 > 0 && Number.isFinite(dt0) && T / dt0 < 1e6, `run: dt = ${dt0}`); // bounded loop
   while (t < T - 1e-14) { const dt = Math.min(dt0, T - t); step(u, t, dt, d.rhs); t += dt; d.enforce(u, t); }
   let e = 0, eLast = 0;
   for (let i = 0; i < N; i++) e += Math.abs(u[i] - exact(d.xc[i], T)) * d.h;

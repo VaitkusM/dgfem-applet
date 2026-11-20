@@ -203,7 +203,7 @@ function sipgWidget(fig) {
       : `— (shown up to ${LMIN_MAX_DOFS} unknowns:\n  reduce N or p)`;
     // honest warning where the discretisation gives no guarantee (intended: try C_IP below the threshold)
     const warn = sol.singular ? '\n<b class="status-bad">matrix numerically singular</b>'
-      : (R.eig && R.lmin <= 0 ? '\n<b class="status-bad">not coercive: no error\nguarantee, u_h may be garbage</b>' : '');
+      : (R.eig && R.lmin <= 0 ? '\n<b class="status-bad">not coercive: no error\nbound: u_h can be far off</b>' : '');
     out.set(`unknowns  = ${sol.nDof}\nnon-zeros = ${nnz(sol.A)}\n`
       + `λ_min(½(A+Aᵀ)):\n  ${lm}\n`
       + `‖u − u_h‖_L2   = ${fmt(R.err.L2)}\nenergy error   = ${fmt(R.err.energy)}\n`
@@ -250,7 +250,8 @@ function convWidget(fig) {
       if (i < tasks.length) setTimeout(step, 0);
       else {
         const r = pairwiseRates(res.sipg.map((x) => x.h), res.sipg.map((x) => x.L2));
-        // is the SIPG matrix coercive at this C_IP? (certified sign of λ_min on the N = 4 mesh; the threshold is mesh independent)
+        // is the SIPG matrix coercive at this C_IP? (certified sign of λ_min on the N = 4 mesh; the threshold C* varies only in the third digit
+        // between meshes — tests/conv/sipg.test.js — so within about ±0.01 of C* another mesh may decide differently)
         const lam = smallestEigenvalueSym(assembleIP(meshOf(4), { p: st.p, f: S.f, Cip: st.Cip }).A).value;
         const note = lam > 0 ? '' : '\n<b class="status-bad">SIPG not coercive at this C_IP\n(λ_min < 0): its errors are\nerratic, rates meaningless</b>';
         out.set(`done: ${tasks.length} solves\nlast SIPG L² rate = ${fmt(r[r.length - 1])} (expected ${st.p + 1})${note}`);

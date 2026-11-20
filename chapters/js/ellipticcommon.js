@@ -22,3 +22,4 @@ export function exactRange(u) {
   for (let i = 0; i <= 60; i++) for (let j = 0; j <= 60; j++) { const v = u(i / 60, j / 60); lo = Math.min(lo, v); hi = Math.max(hi, v); }
   return [lo, hi];
 }
+

@@ -94,3 +94,19 @@ test('containsImaginaryAxis: true for SSP-RK3, RK4, LSRK4; false for forward Eul
   for (const m of ['ssprk3', 'rk4', 'lsrk4']) assert(containsImaginaryAxis(m), m);
   for (const m of ['fe', 'ssprk2']) assert(!containsImaginaryAxis(m), m);
 });
+
+/* ---- round 3 ---- */
+import { diagnoseBlowUp } from '../../lib/core/dg/spectrum.js';
+
+test('diagnoseBlowUp: judged by the largest Δt fraction of the run; linear advection is never called a nonlinear instability', () => {
+  for (const collocated of [false, true]) for (const limited of [false, true]) {
+    // a run that used Δt/Δt_max = 1.05 at some point is a time-step blow-up, whatever the equation
+    for (const linear of [false, true]) assert(diagnoseBlowUp({ linear, frac: 1.05, collocated, limited }) === 'timestep', 'frac > 1');
+    for (const frac of [0.1, 0.8, 1]) {
+      const d = diagnoseBlowUp({ linear: true, frac, collocated, limited });
+      assert(d === 'unexpected', `linear, frac ${frac}: ${d}`);
+      const n = diagnoseBlowUp({ linear: false, frac, collocated, limited });
+      assert(n === (collocated && !limited ? 'aliasing' : 'nonlinear'), `nonlinear, frac ${frac}: ${n}`);
+    }
+  }
+});

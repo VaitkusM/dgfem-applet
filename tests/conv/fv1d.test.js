@@ -9,10 +9,14 @@ function run(o, u0, T, cfl, method = 'ssprk3') {
   const fv = makeFV1D(o);
   const u = cellAverages(u0, fv.xf);
   const step = makeStepper(method, fv.N);
-  let t = 0;
+  let t = 0, steps = 0;
+  assert(Number.isFinite(T) && T >= 0, `run: final time ${T}`);
   while (t < T - 1e-14) {
     const s = Math.max(fv.maxSpeed(u), 1e-12);
     const dt = Math.min(cfl * fv.h / s, T - t);
+    // a regression must FAIL, not hang: no zero/NaN steps, bounded step count
+    assert(dt > 0 && Number.isFinite(dt), `run: time step ${dt} at t = ${t}`);
+    assert(++steps <= 1e6, `run: more than 1e6 steps (t = ${t} of ${T})`);
     step(u, t, dt, fv.rhs);
     t += dt;
   }

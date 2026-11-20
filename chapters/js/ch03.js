@@ -75,6 +75,19 @@ function basisWidget(fig) {
   });
   surf.onResize(draw);
   draw();
+  // mount-time sanity check of what the widget draws: P1 and P2 shape functions are finite, sum to 1 everywhere
+  // (partition of unity) and are nodal (φ_j = 1 at its own node, 0 at the other nodes of the element)
+  let ok = true;
+  for (const p of [1, 2]) {
+    for (const [x, y] of [[0.2, 0.3], [1 / 3, 1 / 3], [0.7, 0.1], [0, 0.5]]) {
+      const v = refBasis(p, x, y).v; let sum = 0;
+      for (let k = 0; k < v.length; k++) sum += v[k];
+      ok = ok && Math.abs(sum - 1) < 1e-13;
+    }
+    const nodes = p === 1 ? [[0, 0], [1, 0], [0, 1]] : [[0, 0], [1, 0], [0, 1], [0.5, 0], [0.5, 0.5], [0, 0.5]];
+    nodes.forEach(([x, y], j) => { const v = refBasis(p, x, y).v; for (let k = 0; k < v.length; k++) ok = ok && Math.abs(v[k] - (k === j ? 1 : 0)) < 1e-13; });
+  }
+  selfCheck('basis: partition of unity and nodal property', ok && space.nDof > 0);
 }
 
 /* ------------------------------------------------------------------ */

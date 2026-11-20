@@ -304,3 +304,23 @@ test('Slope limiter on a non-periodic mesh: linear data is untouched in EVERY el
   assert(makeSlopeLimiter(dg, { M: 0 }).apply(st) > 0, 'jump must be limited');
   for (let i = 0; i < dg.n; i++) assert(st[i] > -1e-12 && st[i] < 1 + 1e-12, `overshoot ${st[i]}`);
 });
+
+/* ---- round 3 ---- */
+test('Playground, advection p = 3, N = 20: Δt/Δt_max = 1.05 blows up, a restart with 1.0 runs to the end (the stability limit is sharp)', () => {
+  const o = { p: 3, N: 20, model: advection(1), flux: 'upwind', quad: 'exact', f0: u0 };
+  const over = playground({ ...o, frac: 1.05 }), at = playground({ ...o, frac: 1.0 });
+  assert(over.blow !== null && over.blow < 2, `frac 1.05: ${JSON.stringify(over)}`);
+  assert(at.blow === null && at.ratio <= 1 + 1e-9, `frac 1.0: ${JSON.stringify(at)}`);
+});
+
+test('Aliasing blow-up vs time step: no cure for Godunov / square wave, but a smaller step avoids it for Rusanov / sine (p = 4, N = 16, collocated)', () => {
+  const o = { p: 4, N: 16, model: burgers, quad: 'collocated' };
+  // Godunov, square wave: blows up at t ≈ 1.3 for every time step
+  for (const frac of [1, 0.8, 0.2, 0.05]) {
+    const r = playground({ ...o, flux: 'godunov', f0: square, frac });
+    assert(r.blow !== null && r.blow > 1.2 && r.blow < 1.4, `godunov frac ${frac}: ${JSON.stringify(r)}`);
+  }
+  // Rusanov, sine: blows up at the limit, survives with half the step — "a smaller Δt never helps" would be false
+  assert(playground({ ...o, flux: 'rusanov', f0: u0, frac: 1 }).blow !== null, 'rusanov sine frac 1');
+  for (const frac of [0.5, 0.2]) assert(playground({ ...o, flux: 'rusanov', f0: u0, frac }).blow === null, `rusanov sine frac ${frac}`);
+});

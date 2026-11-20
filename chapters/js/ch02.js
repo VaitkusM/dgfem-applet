@@ -56,6 +56,18 @@ function stepsWidget(fig) {
     upd();
   }
   show(0);
+  // mount-time sanity: all six derivation steps exist, each contains rendered-or-renderable maths,
+  // and the stepper starts on step 1 (only the first step visible, Back disabled, Next enabled)
+  const shown = steps.map((s) => s.classList.contains('shown'));
+  selfCheck('weak-form derivation: 6 steps, stepper starts at step 1',
+    steps.length === 6 && steps.every((s) => s.textContent.trim().length > 20 && /\$|katex/.test(s.innerHTML))
+    && shown[0] && shown.slice(1).every((v) => !v) && k === 0 && prev.el.disabled && !next.el.disabled
+    && counter.textContent === 'step 1 / 6');
+  // … and walking to the end and back leaves a consistent state
+  show(steps.length - 1);
+  const atEnd = steps.every((s) => s.classList.contains('shown')) && next.el.disabled && !prev.el.disabled && counter.textContent === 'step 6 / 6';
+  show(0);
+  selfCheck('weak-form derivation: stepper reaches step 6 and returns', atEnd && steps.filter((s) => s.classList.contains('shown')).length === 1);
 }
 
 /* ------------------------------------------------------------------ */

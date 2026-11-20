@@ -126,3 +126,33 @@ test('stabilised schemes are first-order accurate at the full-cell CFL number (�
     assertRate(fitRate(hs, e), 1, `${method} α=${alpha} L1`, 0.1, 0.1);
   }
 });
+
+test('regime labels follow ν ≤ α, α < ν < 2α, ν = 2α (marginal, with rounding tolerance), ν > 2α; predicted blow-up time', () => {
+  const reg = (a, v) => smallCellFactor(a, v).regime;
+  assert(reg(0.3, 0.3) === 'monotone' && reg(0.3, 0.1) === 'monotone' && reg(1, 0.9) === 'monotone', 'ν ≤ α');
+  assert(reg(0.3, 0.31) === 'bounded' && reg(0.3, 0.59) === 'bounded', 'α < ν < 2α');
+  assert(reg(0.3, 0.61) === 'unstable' && reg(0.1, 0.8) === 'unstable' && reg(0.447, 0.9) === 'unstable', 'ν > 2α');
+  // equality as the widget sliders produce it: α = 10^(−3 + k/100) (log slider), ν = k·0.05
+  assert(reg(10 ** -1, 0.2) === 'marginal' && reg(0.1, 0.1 + 0.1) === 'marginal' && reg(0.15, 0.1 + 0.2) === 'marginal', 'ν = 2α');
+  assert(reg(10 ** -1, 0.1) === 'monotone' && reg(0.1 + 0.2, 0.3) === 'monotone', 'ν = α counts as monotone');
+  const f = smallCellFactor(10 ** -1, 0.2);
+  assert(!f.monotone && !f.bounded && f.stepsTo1e6 === Infinity, 'marginal: neither flag, no blow-up time');
+  // the marginal case really is bounded and really does not decay: long run at the reported setting (α = 0.1, ν = 0.2)
+  const r = cutFvRun({ N: 40, alpha: 0.1, nu: 0.2, method: 'none', steps: 20000, u0: square, small: 14 });
+  assert(r.max < 1.1 && r.min > -0.1, `marginal run bounded: [${r.min}, ${r.max}]`);
+  for (const nu of [0.3, 0.6, 0.9]) {
+    const m = cutFvRun({ N: 20, alpha: nu / 2, nu, method: 'none', steps: 20000, u0: square, small: 7 });
+    assert(m.max < 2 && m.min > -1, `marginal ν=${nu} bounded: [${m.min}, ${m.max}]`);
+  }
+  // blow-up time: |g|ⁿ = 10⁶ after stepsTo1e6 steps; the actual run needs a few more (the front must first arrive)
+  for (const [alpha, nu] of [[0.1, 0.8], [10 ** (-3 + 0.01 * 248), 0.65], [0.2, 0.5]]) {
+    const pred = smallCellFactor(alpha, nu).stepsTo1e6, g = cutGrid1D(40, alpha, 14), sch = cutFvScheme(g, 'none');
+    assertClose(Math.abs(smallCellFactor(alpha, nu).factor) ** pred >= 1e6 ? 1 : 0, 1, 0);
+    let U = cellAverages(g, square), n = 0, mx = 0;
+    while (mx < 1e6 && n < 5000) { U = cutFvStep(sch, U, nu); n++; mx = Math.max(...U.map(Math.abs)); }
+    assert(n >= pred && n <= pred + 25, `α=${alpha} ν=${nu}: predicted ${pred}, measured ${n} steps`);
+  }
+  // slow growth: factor −1.007 needs ~2000 steps — far more than the two periods (178 steps) of a widget run
+  const slow = smallCellFactor(0.447, 0.9);
+  assert(slow.regime === 'unstable' && slow.stepsTo1e6 > 1000, `slow growth: ${slow.factor}, ${slow.stepsTo1e6} steps`);
+});
