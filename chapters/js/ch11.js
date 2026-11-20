@@ -9,15 +9,19 @@
  *  - w-sbm      : Shifted Boundary Method: surrogate domain and boundary, distance vectors, shift on/off, error
  *  - w-web      : WEB-splines: inner/outer B-splines, extension stencils (click), weight function, solution
  *  - w-conv     : convergence of the three methods side by side
+ *  - w-cutfv    : flow example — explicit upwind finite volumes for 1D advection on a grid with one small cut cell:
+ *                 instability at the full-cell CFL number, cured by cell merging or state redistribution
  */
 import { initChapter, mount, selfCheck } from '../../lib/ui/chapter.js';
-import { widgetLayout, slider, select, checkbox, segmented, readout, fmt } from '../../lib/ui/controls.js';
+import { widgetLayout, slider, select, checkbox, segmented, readout, fmt, button, buttonRow } from '../../lib/ui/controls.js';
 import { createCanvas, View2D, theme, onPointer, arrow, seriesColors } from '../../lib/viz/canvas.js';
 import { drawFunction, drawTriField } from '../../lib/viz/field2d.js';
 import { colorbar } from '../../lib/viz/colormap.js';
 import { drawContours } from '../../lib/viz/contour.js';
 import { drawTriMesh } from '../../lib/viz/meshdraw.js';
 import { Plot } from '../../lib/viz/plot1d.js';
+import { Animator } from '../../lib/viz/anim.js';
+import { cutGrid1D, cutFvScheme, cutFvStep, cellAverages, mass, smallCellFactor, cutFvRun } from '../../lib/core/immersed/cutfv1d.js';
 import { makeShape } from '../../lib/core/mesh/levelset.js';
 import { triGrid } from '../../lib/core/mesh/structured.js';
 import { classifyMesh, INSIDE, CUT, OUTSIDE } from '../../lib/core/quad/cut.js';
@@ -73,6 +77,16 @@ const alpha = (hexOrRgb, a) => {
   return hexOrRgb;
 };
 
+/**
+ * Clamp the domain centre so that Ω stays inside the box [0,1]²: the flower (R(1+a) = 0.36) and the default circle
+ * need a margin of 0.36; a larger circle (radius slider of the geometry widget, up to 0.4) needs R + 0.02.
+ */
+function clampCentre(st) {
+  const m = st.kind === 'circle' && typeof st.R === 'number' ? Math.max(0.36, st.R + 0.02) : 0.36;
+  st.cx = Math.max(m, Math.min(1 - m, st.cx));
+  st.cy = Math.max(m, Math.min(1 - m, st.cy));
+}
+
 /** Drag the domain centre on a canvas (clamped so that Ω stays inside the box). */
 function dragCentre(surf, getView, st, redraw) {
   let start = null;
@@ -81,8 +95,9 @@ function dragCentre(surf, getView, st, redraw) {
     move: (x, y) => {
       if (!start) return;
       const v = getView();
-      st.cx = Math.max(0.36, Math.min(0.64, start.cx + v.invX(x) - start.x));
-      st.cy = Math.max(0.36, Math.min(0.64, start.cy + v.invY(y) - start.y));
+      st.cx = start.cx + v.invX(x) - start.x;
+      st.cy = start.cy + v.invY(y) - start.y;
+      clampCentre(st);
       redraw();
     },
     up: () => { start = null; },
@@ -107,6 +122,7 @@ function geometryWidget(fig) {
   const out = readout(L.controls);
   let view;
   function draw() {
+    clampCentre(st); // the radius slider may have grown the circle beyond the box
     const T = theme(), ctx = s.ctx, ls = shapeOf(st), N = st.N, h = 1 / N;
     view = new View2D(s, BOX, { equal: true, pad: 6 });
     ctx.fillStyle = T.bg; ctx.fillRect(0, 0, s.w, s.h);
@@ -143,8 +159,11 @@ function geometryWidget(fig) {
     const eA = (area - ls.area) / ls.area, eL = (len - ls.perimeter) / ls.perimeter;
     out.set(`elements: <b>${nIn}</b> inside, <b>${nCut}</b> cut\nsmall cuts (α_K < ${fmt(st.thr, 2)}): <b>${nSmall}</b>\nsmallest α_K = ${fmt(amin)}\n`
       + `|Ω_h|/|Ω| − 1 = ${fmt(eA)}\n|Γ_h|/|Γ| − 1 = ${fmt(eL)}\n`
-      + `explicit FV on the smallest cut cell:\nΔt ≈ α_min·Δt_full = ${fmt(amin)}·Δt_full`);
-    selfCheck('geometry: |Ω_h| close to |Ω|', Math.abs(eA) < 0.06 * (12 / N) ** 2 + 1e-12);
+      + (nIn + nCut === 0 ? '⚠ mesh too coarse: no vertex lies inside Ω,\n  the level set is not seen at all'
+        : `explicit FV on the smallest cut cell:\nΔt ≈ α_min·Δt_full = ${fmt(amin)}·Δt_full`));
+    // relative area error ≤ C (h/R)² 4^{−levels}: measured C ≤ 0.38 over all slider settings (incl. the unresolved ones)
+    const Rs = st.kind === 'circle' ? st.R : 0.3;
+    selfCheck('geometry: |Ω_h| − |Ω| = O(h²) 4^{−levels}', Math.abs(eA) < 0.6 * (h / Rs) ** 2 * 4 ** -st.levels + 1e-12);
   }
   dragCentre(s, () => view, st, draw);
   s.onResize(draw);
@@ -204,8 +223,11 @@ function cutfemWidget(fig) {
     if (cur) P.points([st.s], [clip(cur.kh2)], { color: st.ghost ? C[2] : C[1], r: 5 });
     P.legend([{ label: 'with ghost penalty', color: C[2] }, { label: 'without', color: C[1] }], 'tr');
     if (scan.s.length > 60) {
-      const mOn = Math.max(...scan.on), mOff = Math.max(...scan.off);
-      selfCheck('cutfem scan: ghost penalty bounds κh²', mOn < 10 && mOff > mOn);
+      // maxima of the CLIPPED values: a singular matrix (κ = ∞ or NaN from the estimator) counts as CAP.
+      // κh² < 10 with the ghost penalty holds for γ_g ≥ 0.1 (tests/conv/immersed.test.js); for smaller γ_g the
+      // stabilisation fades out on purpose ("Try this"), so only "better than without" is checked there.
+      const mOn = Math.max(...on), mOff = Math.max(...off);
+      selfCheck('cutfem scan: ghost penalty bounds κh²', (st.gammaG < 0.1 || mOn < 10) && mOff >= mOn);
     }
   }
   function draw() {
@@ -213,6 +235,8 @@ function cutfemWidget(fig) {
     const ls = shapeOf({ kind: st.kind, ...centre(st.s, st.N), rot: 0.4 });
     const sol = solveCutFEM({ ls, N: st.N, f: MMS.f, g: MMS.u, ghost: st.ghost, gammaG: st.gammaG });
     const e = errorsCutFEM(sol, MMS.u, MMS.grad), kap = conditionEstimate(sol.A, { k: 40 }).kappa;
+    // without ghost penalty the matrix can be exactly singular (Γ through a grid vertex: a cut cell with α_K ≈ 0)
+    const broken = sol.singular || !Number.isFinite(e.L2);
     cur = { kh2: kap / st.N ** 2 };
     const view = new View2D(s1, [0.1, 0.92, 0.1, 0.92], { equal: true, pad: [6, 64, 6, 6] });
     ctx.fillStyle = T.bg; ctx.fillRect(0, 0, s1.w, s1.h);
@@ -244,11 +268,20 @@ function cutfemWidget(fig) {
     }
     drawGamma(ctx, view, ls, { color: T.ink, width: 2 });
     colorbar(ctx, cmap, s1.w - 52, 12, 12, s1.h - 24, lo, hi, { ink: T.soft });
+    if (broken) {
+      ctx.save(); ctx.fillStyle = T.bg; ctx.globalAlpha = 0.8; ctx.fillRect(0, s1.h / 2 - 26, s1.w, 52); ctx.globalAlpha = 1;
+      ctx.fillStyle = T.ink; ctx.font = `600 13px ${T.ui}`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('singular matrix: no solution at this position', s1.w / 2, s1.h / 2 - 9);
+      ctx.fillText('(a cut cell with zero volume, no ghost penalty)', s1.w / 2, s1.h / 2 + 9);
+      ctx.restore();
+    }
     let amin = 1;
     for (let t = 0; t < mesh.nTri; t++) if (cut.cls[t] === CUT) amin = Math.min(amin, cut.frac[t]);
-    out.set(`DOFs (active vertices): ${sol.nDof}\nsmallest α_K = ${fmt(amin)}\n‖u − u_h‖_L² = ${fmt(e.L2)}\n|u − u_h|_H¹ = ${fmt(e.H1)}\n`
-      + `κ(A) = ${fmt(kap)}\nκ(A)·h² = <b>${fmt(kap / st.N ** 2)}</b>`);
-    selfCheck('cutfem solution finite', Number.isFinite(e.L2));
+    out.set(`DOFs (active vertices): ${sol.nDof}\nsmallest α_K = ${fmt(amin)}\n`
+      + (broken ? '<b>matrix is singular: no solution</b>\nκ(A) = ∞'
+        : `‖u − u_h‖_L² = ${fmt(e.L2)}\n|u − u_h|_H¹ = ${fmt(e.H1)}\nκ(A) = ${fmt(kap)}\nκ(A)·h² = <b>${fmt(kap / st.N ** 2)}</b>`));
+    // with the ghost penalty the system must always be solvable; without it a singular matrix is the lesson
+    selfCheck('cutfem solution finite (with ghost penalty)', !st.ghost || !broken);
     drawScan();
   }
   s1.onResize(draw); s2.onResize(drawScan);
@@ -311,7 +344,8 @@ function sbmWidget(fig) {
     colorbar(c2, 'magma', s2.w - 52, 12, 12, s2.h - 24, 0, hi, { ink: T.soft });
     const sym = csrSymmetryError(sol.A);
     out.set(`DOFs: ${sol.nDof}   surrogate edges: ${sol.bEdges.length}\nmax |d| / h = ${fmt(dmax * st.N)}\n‖u − u_h‖_L²(Ω̃) = ${fmt(e.L2)}\n|u − u_h|_H¹(Ω̃) = ${fmt(e.H1)}\n`
-      + `matrix ${sym < 1e-12 ? 'symmetric' : `non-symmetric (rel. asym. ${fmt(sym, 2)})`}`);
+      + `matrix ${sym < 1e-12 ? 'symmetric' : `non-symmetric (rel. asym. ${fmt(sym, 2)})`}`
+      + (st.alpha < 3 ? '\n⚠ α < 3: the Nitsche penalty is too weak here\n  (coercivity can be lost; errors may explode)' : ''));
     selfCheck('sbm solution finite', Number.isFinite(e.L2) && !sol.singular);
   }
   dragCentre(s1, () => view, st, draw);
@@ -329,6 +363,9 @@ function webWidget(fig) {
   const p2 = L.panel('field');
   const s2 = createCanvas(p2, { aspect: 1 });
   const st = { kind: 'circle', cx: 0.5, cy: 0.5, rot: 0.3, n: 2, N: 10, view: 'sol', extend: true, sel: -1 };
+  // `sp` is always the WEB space WITH extension: it carries the true inner/outer classification shown on the left.
+  // With the extension switched off the solver keeps every relevant B-spline as its own unknown (sol.sp); the
+  // stencil display and the basis view then show plain weighted B-splines w·b_k instead of extended ones.
   select(L.controls, { label: 'domain', value: st.kind, options: SHAPES, onChange: (v) => { st.kind = v; st.sel = -1; rebuild(); } });
   segmented(L.controls, { label: 'degree $n$', value: '2', options: [{ value: '1', label: '1' }, { value: '2', label: '2' }, { value: '3', label: '3' }], onChange: (v) => { st.n = +v; st.sel = -1; rebuild(); } });
   slider(L.controls, { label: 'cells per side $1/h$', min: 6, max: 20, step: 1, value: st.N, onInput: (v) => { st.N = v; st.sel = -1; rebuild(); } });
@@ -338,6 +375,7 @@ function webWidget(fig) {
     onChange: (v) => { st.view = v; drawField(); },
   });
   checkbox(L.controls, { label: 'extension (off: keep outer B-splines as unknowns)', value: st.extend, onChange: (v) => { st.extend = v; rebuild(); } });
+  // (rebuild redraws both panels, so stencil, basis view and labels follow the checkbox)
   const out = readout(L.controls);
   let sp, sol, err, kap, view, ls;
   function rebuild() {
@@ -374,7 +412,9 @@ function webWidget(fig) {
       ctx.save(); ctx.setLineDash([5, 4]); ctx.strokeStyle = T.accent4; ctx.lineWidth = 1.5;
       ctx.strokeRect(view.X(k1 * h), view.Y((k2 + st.n + 1) * h), (st.n + 1) * h * view.sx, (st.n + 1) * h * view.sy);
       ctx.restore();
-      if (sp.bsCls[st.sel] === BS_OUTER) {
+      if (!st.extend) {
+        selTxt.push(`${sp.bsCls[st.sel] === BS_OUTER ? 'outer' : 'inner'} index (${k1}, ${k2})`, 'extension off: this B-spline is its', 'own unknown, basis function w·b');
+      } else if (sp.bsCls[st.sel] === BS_OUTER) {
         const E = sp.ext.get(st.sel);
         let sum = 0;
         E.ids.forEach((id, q) => { hl.set(id, E.e[q]); sum += E.e[q]; });
@@ -405,7 +445,7 @@ function webWidget(fig) {
       ctx.restore();
     }
     const nOut = sp.relevant.length - sp.inner.length;
-    out.set(`inner B-splines (unknowns): <b>${sp.inner.length}</b>\nouter B-splines: <b>${nOut}</b>${st.extend ? ' (extended)' : ' (kept as unknowns!)'}\n`
+    out.set(`inner B-splines: <b>${sp.inner.length}</b>\nouter B-splines: <b>${nOut}</b>${st.extend ? ' (extended)' : ' (kept as unknowns!)'}\nunknowns: <b>${sol.nDof}</b>\n`
       + `‖u − u_h‖_L² = ${fmt(err.L2)}\n|u − u_h|_H¹ = ${fmt(err.H1)}\nκ(Jacobi-scaled A)·h² = ${fmt(kap / st.N ** 2)}`
       + (selTxt.length ? `\n\n${selTxt.join('\n')}` : '\n\nclick a dot on the left'));
   }
@@ -421,11 +461,13 @@ function webWidget(fig) {
       for (let i = 0; i <= 50; i++) for (let j = 0; j <= 50; j++) { const x = i / 50, y = j / 50; if (ls.phi(x, y) < 0) hi = Math.max(hi, f(x, y)); }
       hi = hi || 1e-12;
     } else {
-      // selected WEB-spline B_i = (w / w(x_i)) (b_i + Σ_j e_ij b_j)
-      const i = st.sel >= 0 && sp.bsCls[st.sel] === BS_INNER ? st.sel : sp.inner[Math.floor(sp.inner.length / 2)];
+      // selected WEB-spline B_i = (w / w(x_i)) (b_i + Σ_j e_ij b_j); with the extension off: the plain weighted
+      // B-spline w·b_k of ANY relevant index k (normalised by w(x_k) if it has an inside cell, as in the solver)
+      const ok = st.sel >= 0 && (st.extend ? sp.bsCls[st.sel] === BS_INNER : sp.bsCls[st.sel] !== 0);
+      const i = ok ? st.sel : sp.inner[Math.floor(sp.inner.length / 2)];
       const coef = new Map([[i, 1]]);
-      for (const [j, E] of sp.ext) { const q = Array.from(E.ids).indexOf(i); if (q >= 0) coef.set(j, E.e[q]); }
-      const wi = sp.wx[sp.innerId[i]];
+      if (st.extend) for (const [j, E] of sp.ext) { const q = Array.from(E.ids).indexOf(i); if (q >= 0) coef.set(j, E.e[q]); }
+      const wi = sp.innerId[i] >= 0 ? sp.wx[sp.innerId[i]] : 1;
       f = (x, y) => {
         const N = st.N, c = Math.min(N - 1, Math.floor(x * N)) + N * Math.min(N - 1, Math.floor(y * N));
         const B = cellBsplines(sp, c, x, y);
@@ -440,7 +482,8 @@ function webWidget(fig) {
     drawFunction(s2, v2, (x, y) => (x < 0 || x > 1 || y < 0 || y > 1 || ls.phi(x, y) >= 0 ? NaN : f(x, y)), { cmap, lo, hi, step: 2 });
     drawGamma(ctx, v2, ls, { color: T.ink, width: 1.5 });
     colorbar(ctx, cmap, s2.w - 52, 12, 12, s2.h - 24, lo, hi, { ink: T.soft });
-    const lab = { w: 'weight function w', sol: 'WEB-spline solution u_h', err: 'error |u − u_h|', basis: 'WEB-spline B_i (click an inner dot)' }[st.view];
+    const lab = { w: 'weight function w', sol: st.extend ? 'WEB-spline solution u_h' : 'solution u_h without extension', err: 'error |u − u_h|',
+      basis: st.extend ? 'WEB-spline B_i (click an inner dot)' : 'weighted B-spline w·b_k (click any dot)' }[st.view];
     p2.querySelector('.canvas-label').textContent = lab;
   }
   onPointer(s1.canvas, {
@@ -476,7 +519,7 @@ function convWidget(fig) {
     { id: 'sbm0', label: 'SBM P1 (no shift)', Ns: [8, 16, 32, 64] },
     { id: 'web1', label: 'WEB n=1', Ns: [8, 16, 32, 64] },
     { id: 'web2', label: 'WEB n=2', Ns: [8, 16, 32, 64] },
-    { id: 'web3', label: 'WEB n=3', Ns: [8, 16, 32] },
+    { id: 'web3', label: 'WEB n=3', Ns: [8, 16, 32, 64] },
   ];
   const res = {};
   let timer = 0;
@@ -503,6 +546,8 @@ function convWidget(fig) {
       else {
         selfCheck('conv: CutFEM L2 rate ≈ 2', Math.abs(fitRate(res.cut.h, res.cut.L2) - 2) < 0.3);
         selfCheck('conv: SBM L2 rate ≈ 2', Math.abs(fitRate(res.sbm.h, res.sbm.L2) - 2) < 0.4);
+        // WEB-splines: at least n + 1 between the two finest grids (measured 2.0–2.2, 3.0–3.1, 4.1–4.3)
+        for (const n of [1, 2, 3]) { const r = fitRate(res[`web${n}`].h, res[`web${n}`].L2, 2); selfCheck(`conv: WEB n=${n} L2 rate ≥ n+1`, r > n + 0.8 && r < n + 1.8); }
       }
     };
     timer = setTimeout(step, 200);
@@ -525,8 +570,127 @@ function convWidget(fig) {
     out.set(`${key} rates (last two points):\n${lines.join('\n')}`);
   }
   s.onResize(draw);
+  // immediate sanity check (the rate checks above only arrive when the background computation has finished)
+  {
+    const ls0 = makeShape({ kind: 'circle', cx: 0.513, cy: 0.478, R: 0.33 }), e8 = run('cut', 8, ls0), e16 = run('cut', 16, ls0);
+    selfCheck('conv: CutFEM error drops ≈ 4× from N = 8 to 16', e8.L2 / e16.L2 > 3 && e8.L2 / e16.L2 < 5);
+  }
   start();
   draw();
+}
+
+/* ------------------------------------------------------------------ */
+/* W6: flow example — the small-cell problem of explicit cut-cell FV    */
+/* ------------------------------------------------------------------ */
+function cutfvWidget(fig) {
+  const L = widgetLayout(fig);
+  const p1 = L.panel('cell averages $U_i^n$ (bars) and exact solution (dashed); the small cell is marked');
+  const s1 = createCanvas(p1, { aspect: 0.42 });
+  p1.style.flex = '1 1 100%';
+  const p2 = L.panel('$\\max_i |U_i^n|$ versus the step number $n$');
+  const s2 = createCanvas(p2, { aspect: 0.45 });
+  const PROFILES = {
+    square: { label: 'square pulse', f: (x) => (x > 0.1 && x < 0.3 ? 1 : 0) },
+    bump: { label: 'smooth bump', f: (x) => Math.exp(-200 * (x - 0.2) ** 2) },
+  };
+  const METHODS = { none: 'no fix', merge: 'cell merging', srd: 'state redistribution' };
+  const BLOWUP = 1e6; // guard: stop the run when |U| exceeds this
+  const st = { alpha: 0.1, nu: 0.8, method: 'none', N: 40, profile: 'square' };
+  let grid, sch, U, m0, n, hist, blown, lo, hi, frame = 0;
+  segmented(L.controls, {
+    label: 'small-cell treatment', value: st.method,
+    options: Object.entries(METHODS).map(([value, label]) => ({ value, label })),
+    onChange: (v) => { st.method = v; reset(); },
+  });
+  slider(L.controls, { label: 'volume fraction $\\alpha$ of the small cell', min: 1e-3, max: 1, log: true, value: st.alpha, format: (v) => fmt(v, 2), onInput: (v) => { st.alpha = v; reset(); } });
+  slider(L.controls, { label: 'full-cell CFL number $\\nu = a\\Delta t/h$', min: 0.05, max: 0.9, step: 0.05, value: st.nu, onInput: (v) => { st.nu = v; reset(); } });
+  slider(L.controls, { label: 'full cells $N$', min: 20, max: 80, step: 10, value: st.N, onInput: (v) => { st.N = v; reset(); } });
+  select(L.controls, { label: 'initial profile', value: st.profile, options: Object.entries(PROFILES).map(([value, r]) => ({ value, label: r.label })), onChange: (v) => { st.profile = v; reset(); } });
+  const anim = new Animator(fig, {
+    step: () => { if (++frame % 4) return undefined; return advance() ? undefined : false; }, // one time step every 4th frame
+    draw: () => draw(),
+  });
+  const row = buttonRow(L.controls);
+  const play = button(row, { label: '▶ Play', primary: true, onClick: () => anim.toggle() });
+  button(row, { label: 'Step', onClick: () => { anim.pause(); advance(); draw(); } });
+  button(row, { label: '↺ Reset', onClick: () => reset() });
+  anim.o.onState = (r) => play.setLabel(r ? '❚❚ Pause' : '▶ Play');
+  const out = readout(L.controls);
+
+  function reset() {
+    anim.pause();
+    // the small cell sits just ahead of the pulse (x ≈ 0.35), so the front reaches it after a few steps
+    grid = cutGrid1D(st.N, st.alpha, Math.round(0.35 * st.N));
+    sch = cutFvScheme(grid, st.method);
+    U = cellAverages(grid, PROFILES[st.profile].f);
+    m0 = mass(grid, U); n = 0; blown = false; hist = [1]; lo = 0; hi = 1;
+    hist[0] = Math.max(...U.map(Math.abs));
+    draw();
+  }
+  /** One time step; returns false when the run should stop (blow-up guard or two periods done). */
+  function advance() {
+    if (blown || n * st.nu * grid.h >= 2) return false;
+    U = cutFvStep(sch, U, st.nu); n++;
+    let m = 0;
+    for (const v of U) { m = Math.max(m, Math.abs(v)); lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    hist.push(m);
+    if (!(m < BLOWUP)) { blown = true; return false; }
+    return true;
+  }
+  function draw() {
+    const T = theme(), C = seriesColors(), t = n * st.nu * grid.h, s = grid.small;
+    const P = new Plot(s1, { xlim: [0, 1], ylim: [-0.6, 1.6], xlabel: 'x' });
+    P.frame();
+    // small cell and (for the fixes) its merging neighbourhood
+    const ctx = s1.ctx, k0 = sch.nbrPtr[s], k1 = sch.nbrPtr[s + 1];
+    const xa = grid.x[sch.nbrIdx[k0]], xb = grid.x[sch.nbrIdx[k1 - 1] + 1];
+    ctx.save();
+    if (k1 - k0 > 1) { ctx.fillStyle = alpha(T.accent4, 0.13); ctx.fillRect(P.X(xa), P.py0, P.X(xb) - P.X(xa), P.py1 - P.py0); }
+    ctx.fillStyle = alpha(T.accent2, 0.8);
+    ctx.fillRect(P.X(grid.x[s]) - 0.5, P.py0, Math.max(2, P.X(grid.x[s + 1]) - P.X(grid.x[s])), P.py1 - P.py0);
+    ctx.restore();
+    const clamp = Float64Array.from(U, (v) => (Number.isFinite(v) ? Math.max(-10, Math.min(10, v)) : 10));
+    P.bars(grid.x, clamp, { color: C[0] });
+    const xs = Array.from({ length: 401 }, (_, i) => i / 400), f = PROFILES[st.profile].f;
+    P.line(xs, xs.map((x) => { const y = x - t; return f(y - Math.floor(y)); }), { color: T.ink, dash: [5, 4], width: 1.4 });
+    P.legend([{ label: `${METHODS[st.method]}, step ${n}, t = ${fmt(t, 3)}`, color: C[0] }, { label: 'exact', color: T.ink, dash: [5, 4] }], 'tr');
+    // history of max |U|
+    const fac = smallCellFactor(st.alpha, st.nu), unstable = st.method === 'none' || (st.method === 'srd' && st.alpha >= 0.5);
+    const nMax = Math.max(40, hist.length - 1);
+    const Q = new Plot(s2, { xlim: [0, nMax], ylim: [0.5, BLOWUP], ylog: true, xlabel: 'step n' });
+    Q.frame();
+    Q.hline(1, { color: T.faint });
+    Q.line(hist.map((_, k) => k), hist.map((v) => Math.min(v, BLOWUP)), { color: C[0], width: 2 });
+    if (st.method === 'none' && !fac.bounded) {
+      // slope of the predicted growth |1 − ν/α|ⁿ, anchored at the last computed point
+      const g = Math.abs(fac.factor), kE = hist.length - 1, k0s = Math.max(0, kE - 12);
+      if (kE > 0) Q.line([k0s, kE], [hist[kE] / g ** (kE - k0s), hist[kE]], { color: C[1], dash: [4, 4], width: 1.4 });
+      Q.legend([{ label: 'max |U|', color: C[0] }, { label: `slope |1 − ν/α| = ${fmt(g, 3)} per step`, color: C[1], dash: [4, 4] }], 'tl');
+    } else Q.legend([{ label: 'max |U|', color: C[0] }], 'tl');
+    const exact = cellAverages(grid, f, t);
+    let l1 = 0; for (let i = 0; i < grid.n; i++) l1 += grid.w[i] * Math.abs(U[i] - exact[i]);
+    const verdict = !unstable ? (st.method === 'merge' ? 'merged cell: monotone for ν ≤ 1' : 'SRD: conservative, bounded (not monotone)')
+      : fac.monotone ? 'ν ≤ α: monotone, nothing to fix'
+        : fac.bounded ? 'α < ν < 2α: bounded, but over/undershoots' : 'ν > 2α: UNSTABLE, blows up';
+    out.set(`h = ${fmt(grid.h, 3)}, small cell: αh = ${fmt(st.alpha * grid.h, 2)}\n`
+      + `local CFL in the small cell ν/α = ${fmt(st.nu / st.alpha, 3)}\n`
+      + (st.method === 'none' ? `its amplification 1 − ν/α = ${fmt(fac.factor, 3)}\n` : '')
+      + (st.method === 'srd' && st.alpha >= 0.5 ? 'α ≥ ½: SRD leaves the cell alone\n' : '')
+      + `${verdict}\n`
+      + `step ${n}:  min U = ${fmt(lo, 3)}, max U = ${fmt(hi, 3)}\n`
+      + (blown ? `<b>stopped: |U| > 1e6 after ${n} steps</b>`
+        : `mass drift ${fmt(Math.abs(mass(grid, U) - m0), 2)}\nL¹ error ${fmt(l1, 3)}`));
+    selfCheck('cutfv values finite or stopped by the guard', blown || U.every(Number.isFinite));
+  }
+  s1.onResize(draw); s2.onResize(draw);
+  reset();
+  // sanity checks at the default setting (α = 0.1, ν = 0.8), run headless: no fix blows up with the predicted
+  // factor, merging is monotone, SRD is bounded; both fixes conserve mass
+  const base = { N: st.N, alpha: st.alpha, nu: st.nu, steps: 60, u0: PROFILES.square.f, small: Math.round(0.35 * st.N) };
+  const rn = cutFvRun({ ...base, method: 'none' }), rm = cutFvRun({ ...base, method: 'merge' }), rs = cutFvRun({ ...base, method: 'srd' });
+  selfCheck('cutfv: no fix blows up for ν > 2α', !(rn.max < BLOWUP) && !smallCellFactor(st.alpha, st.nu).bounded);
+  selfCheck('cutfv: cell merging is monotone and conservative', rm.min >= -1e-12 && rm.max <= 1 + 1e-12 && rm.massDrift < 1e-12);
+  selfCheck('cutfv: state redistribution is bounded and conservative', rs.min > -1e-9 && rs.max < 1 + 1e-9 && rs.massDrift < 1e-12);
 }
 
 initChapter(() => {
@@ -535,4 +699,5 @@ initChapter(() => {
   mount('w-sbm', sbmWidget);
   mount('w-web', webWidget);
   mount('w-conv', convWidget);
+  mount('w-cutfv', cutfvWidget);
 });

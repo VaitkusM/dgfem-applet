@@ -16,8 +16,8 @@ import { Animator } from '../../lib/viz/anim.js';
 import { drawTriField } from '../../lib/viz/field2d.js';
 import { colorbar } from '../../lib/viz/colormap.js';
 import { drawSpy } from '../../lib/viz/spy.js';
-import { ddPoissonProblem, toVertices } from '../../lib/core/dd/problem.js';
-import { boxPartition } from '../../lib/core/dd/partition.js';
+import { ddPoissonProblem, toVertices, pointLoad } from '../../lib/core/dd/problem.js';
+import { boxPartition, oneBoxPerIteration } from '../../lib/core/dd/partition.js';
 import { schwarzSetup, solveSchwarz, alternatingSchwarz1D } from '../../lib/core/dd/schwarz.js';
 import { schurSetup, denseSchur, denseCondition, localSchur, dirichletNeumannSetup, dnSpectrum } from '../../lib/core/dd/schur.js';
 import { sparseSolve } from '../../lib/core/la/direct.js';
@@ -131,9 +131,11 @@ function schwarz1dWidget(fig) {
 /* ------------------------------------------------------------------ */
 /* W2: overlapping Schwarz in 2D                                        */
 /* ------------------------------------------------------------------ */
+// 'corner' is a unit point source (Dirac delta) at the grid vertex (1, 1): its load vector has ONE non-zero
+// entry, so "exactly zero" regions of the iterates are really zero (a Gaussian would be tiny but non-zero everywhere).
 const RHS = {
-  one: { label: 'f = 1', f: () => 1 },
-  corner: { label: 'source near (0.15, 0.15)', f: (x, y) => 60 * Math.exp(-200 * ((x - 0.15) ** 2 + (y - 0.15) ** 2)) },
+  one: { label: 'f = 1' },
+  corner: { label: 'point source in the corner, at (h, h)' },
 };
 
 /** Draw the overlapping partition: translucent boxes Ω'_k and core outlines. */
@@ -184,7 +186,13 @@ function schwarz2dWidget(fig) {
   const N = 32;
   const st = { Kx: 3, Ky: 3, ell: 1, method: 'asm-cg', coarse: false, rhs: 'corner', n: 2, frame: 0, res: null, scale: 'ulog' };
   const probs = {};
-  const getProb = (key) => (probs[key] ||= ddPoissonProblem(N, RHS[key].f));
+  const getProb = (key) => {
+    if (!probs[key]) {
+      probs[key] = ddPoissonProblem(N); // f = 1
+      if (key === 'corner') probs[key].b = pointLoad(probs[key], 1, 1);
+    }
+    return probs[key];
+  };
   segmented(L.controls, {
     label: 'method', value: st.method,
     options: [{ value: 'multiplicative', label: 'mult.' }, { value: 'asm-cg', label: 'ASM+CG' }, { value: 'ras-gmres', label: 'RAS+GMRES' }],
@@ -218,7 +226,21 @@ function schwarz2dWidget(fig) {
     const uh = prob.uh || (prob.uh = sparseSolve(prob.A, prob.b));
     let m = 0; for (const v of uh) m = Math.max(m, Math.abs(v));
     let dmax = 0; for (let i = 0; i < uh.length; i++) dmax = Math.max(dmax, Math.abs(res.x[i] - uh[i]));
-    st.res = { ...res, part, prob, uh, umax: m, nc: dd.coarse ? dd.coarse.nc : 0, dmax };
+    // information front (one-level additive methods, point source): number of (iteration, subdomain) pairs with a
+    // non-zero iterate more than n boxes away from the corner after n iterations
+    let front = null;
+    if (st.rhs === 'corner' && !dd.coarse && st.method !== 'multiplicative') {
+      let viol = 0;
+      for (let k = 1; k < res.iterates.length; k++) for (const s of part.subs) {
+        if (Math.max(s.kx, s.ky) <= k) continue;
+        const x = res.iterates[k];
+        for (let l = 0; l < s.dofs.length; l++) if (s.core[l] && x[s.dofs[l]] !== 0) { viol++; break; }
+      }
+      front = { oneBox: oneBoxPerIteration(part), viol };
+      // δ ≤ H ⇒ exactly zero beyond n boxes (lib/core/dd/partition.js oneBoxPerIteration; tested for all settings)
+      selfCheck('2D Schwarz: one box per iteration when δ ≤ H', !front.oneBox || viol === 0);
+    }
+    st.res = { ...res, part, prob, uh, umax: m, nc: dd.coarse ? dd.coarse.nc : 0, dmax, front };
     st.n = Math.min(st.n, res.iterates.length - 1);
     if (anim.running) st.n = 0;
     selfCheck('2D Schwarz converges to the monolithic solution', !res.converged || dmax < 1e-6 * m);
@@ -272,7 +294,10 @@ function schwarz2dWidget(fig) {
     out.set(`${R.part.subs.length} subdomains, H ≈ ${fmt(1 / Math.max(st.Kx, st.Ky))}, h = 1/${N}, δ = ${2 * st.ell}h\n` +
       `coarse functions n_c = ${R.nc}\n` +
       `iterations to 1e-8: ${R.converged ? R.iters : `> ${R.iters}`}\n` +
-      `n = ${st.n}: rel. residual ${fmt(H[st.n])}\n         max |error| ${fmt(emax)}`);
+      `n = ${st.n}: rel. residual ${fmt(H[st.n])}\n         max |error| ${fmt(emax)}` +
+      (R.front ? (R.front.oneBox
+        ? '\nfront: δ ≤ H ⇒ exactly 0 beyond n boxes'
+        : `\nfront: δ > H ⇒ can jump 2 boxes per iteration${R.front.viol ? '' : ' (not here)'}`) : ''));
     selfCheck('2D Schwarz iterate finite', Number.isFinite(emax));
   }
   s1.onResize(() => st.res && drawStatic()); s2.onResize(() => st.res && drawField()); s3.onResize(() => st.res && drawField());
@@ -338,7 +363,10 @@ function scalingWidget(fig) {
     if (d.length >= 4) {
       const last = d[d.length - 1], second = d[1];
       selfCheck('scaling: one-level grows', last.asm1 > second.asm1);
-      selfCheck('scaling: two-level better at many subdomains', last.asm2 < last.asm1);
+      // The coarse space pays off when the overlap is small compared with H (ℓ = 1: 35 vs 22 weak, 30 vs 20 strong;
+      // tests/conv/dd.test.js). With ℓ = 3 in the strong experiment δ = H at K = 8 and both need ≈ 20 iterations.
+      if (st.ell === 1) selfCheck('scaling: two-level better at many subdomains (ℓ = 1)', last.asm2 < last.asm1);
+      else selfCheck('scaling: two-level not worse than one-level (+2)', last.asm2 <= last.asm1 + 2);
     }
   }
   function draw() {
@@ -359,6 +387,13 @@ function scalingWidget(fig) {
   }
   s1.onResize(draw);
   draw();
+  // immediate sanity check (the experiment itself runs asynchronously): 2×2 subdomains on N = 16 need far fewer
+  // preconditioned iterations than plain CG
+  {
+    const prob = ddPoissonProblem(16), dd = schwarzSetup(prob, boxPartition(16, 2, 2, 1));
+    const a = solveSchwarz(dd, prob.b, { method: 'asm-cg', tol: 1e-8 }), c = cg(prob.A, prob.b, { tol: 1e-8 });
+    selfCheck('scaling: ASM+CG converges faster than CG (N = 16, 2×2)', a.converged && a.iters < c.iters);
+  }
   run();
 }
 
@@ -371,7 +406,7 @@ function schurWidget(fig) {
   const s1 = createCanvas(p1, { aspect: 1 });
   const p2 = L.panel('reordered matrix $[I_1,\\dots,I_K,\\Gamma]$');
   const s2 = createCanvas(p2, { aspect: 1 });
-  const p3 = L.panel('$S$ (dense!)');
+  const p3 = L.panel('$S$ (dense blocks)');
   const s3 = createCanvas(p3, { aspect: 1 });
   for (const p of [p1, p2, p3]) p.style.flex = '1 1 190px';
   const p4 = L.panel('condition numbers versus mesh size');
@@ -418,6 +453,9 @@ function schurWidget(fig) {
     const S = denseSchur(su), nG = su.gamma.length;
     drawSpy(s3, denseToCsr(S.map((v) => (Math.abs(v) < 1e-12 ? 0 : v)), nG), { magnitude: true, color: T.accent2 });
     let nnzS = 0; for (const v of S) if (Math.abs(v) > 1e-12) nnzS++;
+    let asym = 0, dmin = Infinity;
+    for (let i = 0; i < nG; i++) { dmin = Math.min(dmin, S[i * nG + i]); for (let j = 0; j < i; j++) asym = Math.max(asym, Math.abs(S[i * nG + j] - S[j * nG + i])); }
+    selfCheck('Schur complement is symmetric with positive diagonal', asym < 1e-10 && dmin > 0);
     let msg = `N = ${N}: n = ${prob.n}, |Γ| = ${nG}\n|I_k| = ${su.interiors.map((I) => I.length).join(', ')}\nS: ${nG}×${nG}, ${fmt(100 * nnzS / (nG * nG), 3)} % non-zero`;
     if (Kx === 3 && Ky === 3) {
       const loc = localSchur(su, 4);

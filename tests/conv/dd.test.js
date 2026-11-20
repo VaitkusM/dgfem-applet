@@ -4,8 +4,8 @@
  * Dirichlet–Neumann relaxation.
  */
 import { test, assert, assertRate } from '../harness.js';
-import { ddPoissonProblem } from '../../lib/core/dd/problem.js';
-import { boxPartition } from '../../lib/core/dd/partition.js';
+import { ddPoissonProblem, pointLoad } from '../../lib/core/dd/problem.js';
+import { boxPartition, oneBoxPerIteration } from '../../lib/core/dd/partition.js';
 import { schwarzSetup, solveSchwarz } from '../../lib/core/dd/schwarz.js';
 import { schurSetup, denseSchur, denseCondition, dirichletNeumannSetup, dnSpectrum } from '../../lib/core/dd/schur.js';
 import { sparseSolve } from '../../lib/core/la/direct.js';
@@ -122,4 +122,52 @@ test('one-level additive Schwarz moves information at most one subdomain per ite
     const two = solveSchwarz(schwarzSetup(prob, part, { coarse: 'q1' }), b, { method, tol: 1e-14, maxIter: 2, keepIterates: true });
     assert(part.subs.every((s) => coreMax(two.iterates[1], s) > 0), `${method}: two-level reaches every subdomain at iteration 1`);
   }
+});
+
+test('information front at the widget settings (N = 32, point source at vertex (1,1)): exactly zero beyond n boxes iff δ ≤ H', () => {
+  // All 6·6·4 partitions the Schwarz widget can show. oneBoxPerIteration(part) (every box with two neighbours is at
+  // least 2ℓ cells wide) predicts EXACTLY when the one-level ASM+CG iterate obeys "subdomains more than n boxes
+  // away are still zero after n iterations"; RAS+GMRES obeys it whenever the criterion holds.
+  const N = 32, prob = ddPoissonProblem(N), b = pointLoad(prob, 1, 1);
+  assert(b.reduce((s, v) => s + (v !== 0), 0) === 1 && b[0] === 1, 'point load = one non-zero entry');
+  const coreMax = (x, s) => { let m = 0; s.dofs.forEach((d, l) => { if (s.core[l]) m = Math.max(m, Math.abs(x[d])); }); return m; };
+  const violations = (part, method) => {
+    const r = solveSchwarz(schwarzSetup(prob, part), b, { method, tol: 1e-14, maxIter: 7, keepIterates: true });
+    let v = 0;
+    for (let k = 1; k < r.iterates.length; k++) for (const s of part.subs) if (Math.max(s.kx, s.ky) > k && coreMax(r.iterates[k], s) !== 0) v++;
+    return v;
+  };
+  let nOk = 0, nWide = 0;
+  for (let Kx = 1; Kx <= 6; Kx++) for (let Ky = 1; Ky <= 6; Ky++) for (let ell = 1; ell <= 4; ell++) {
+    const part = boxPartition(N, Kx, Ky, ell), ok = oneBoxPerIteration(part);
+    const vA = violations(part, 'asm-cg');
+    assert((vA === 0) === ok, `ASM+CG ${Kx}x${Ky} ℓ=${ell}: ${vA} violations, criterion ${ok}`);
+    if (ok) { nOk++; assert(violations(part, 'ras-gmres') === 0, `RAS+GMRES ${Kx}x${Ky} ℓ=${ell}`); } else nWide++;
+  }
+  assert(nOk === 113 && nWide === 31, `${nOk} partitions with δ ≤ H, ${nWide} with wider overlap`);
+  // the minimal overlap ℓ = 1 always qualifies; 6×6 boxes (5–6 cells) with ℓ = 3 (δ = 6h) do not
+  assert(oneBoxPerIteration(boxPartition(N, 6, 6, 1)) && oneBoxPerIteration(boxPartition(N, 6, 6, 2)), 'δ ≤ H');
+  assert(!oneBoxPerIteration(boxPartition(N, 6, 6, 3)) && !oneBoxPerIteration(boxPartition(N, 6, 6, 4)), 'δ > H');
+  // with the coarse space the first iterate is non-zero in every subdomain
+  for (const method of ['asm-cg', 'ras-gmres']) {
+    const part = boxPartition(N, 6, 6, 1);
+    const two = solveSchwarz(schwarzSetup(prob, part, { coarse: 'q1' }), b, { method, tol: 1e-14, maxIter: 1, keepIterates: true });
+    assert(part.subs.every((s) => coreMax(two.iterates[1], s) > 0), `${method}: two-level reaches all 36 subdomains at once`);
+  }
+});
+
+test('scaling experiment of the widget: with minimal overlap (ℓ = 1) two-level ASM+CG beats one-level at K = 8, weak and strong', () => {
+  // weak: N = 8K; strong: N = 48. Measured: weak 35 vs 22, strong 30 vs 20 iterations.
+  // (With ℓ = 3 in the strong experiment the boxes are 6 cells wide and δ = 6h = H: one-level 19, two-level 20 —
+  //  the coarse space no longer pays, which is why the caption restricts the claim to small overlap.)
+  for (const N of [64, 48]) {
+    const prob = ddPoissonProblem(N), part = boxPartition(N, 8, 8, 1);
+    const one = solveSchwarz(schwarzSetup(prob, part), prob.b, { method: 'asm-cg', tol: 1e-8 }).iters;
+    const two = solveSchwarz(schwarzSetup(prob, part, { coarse: 'q1' }), prob.b, { method: 'asm-cg', tol: 1e-8 }).iters;
+    assert(two <= 0.75 * one, `N=${N}: one-level ${one}, two-level ${two}`);
+  }
+  const prob = ddPoissonProblem(48), part = boxPartition(48, 8, 8, 3);
+  const one = solveSchwarz(schwarzSetup(prob, part), prob.b, { method: 'asm-cg', tol: 1e-8 }).iters;
+  const two = solveSchwarz(schwarzSetup(prob, part, { coarse: 'q1' }), prob.b, { method: 'asm-cg', tol: 1e-8 }).iters;
+  assert(Math.abs(one - two) <= 2 && one <= 22, `generous overlap: one-level ${one} ≈ two-level ${two}`);
 });

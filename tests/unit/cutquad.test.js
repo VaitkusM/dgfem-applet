@@ -91,7 +91,7 @@ test('cut quadrature: area and length errors O(h²); each refinement level gains
     assert(e0 / e1 > 2.5 && e1 / e2 > 2.5, `${ls.kind} refinement gains ${e0 / e1}, ${e1 / e2}`);
     for (const N of [8, 32]) {
       const c = meas(N, 1, true);
-      assert(c.dA < 1e-12 && c.dL < 1e-9, `${ls.kind} curved cut N=${N}: ${c.dA}, ${c.dL}`);
+      assert(c.dA < 1e-12 && c.dL < 1e-11, `${ls.kind} curved cut N=${N}: ${c.dA}, ${c.dL}`); // measured ≤ 2.4e-14, ≤ 4.9e-13
     }
   }
 });
@@ -102,4 +102,26 @@ test('classification: cut elements have volume fraction in (0, 1], inside elemen
     if (C.cls[t] === CUT) assert(C.frac[t] > 0 && C.frac[t] <= 1 + 1e-14, 'fraction');
     if (C.cls[t] === INSIDE) assert(C.frac[t] === 1);
   }
+});
+
+test('cut data are typed arrays with the documented layouts (6 per sub-triangle / segment, 4 per curved piece, 2 per arc)', () => {
+  const ls = circleLS({ cx: 0.5, cy: 0.5, R: 0.3 });
+  // A = (0.75, 0.5) inside, B = (0.95, 0.5) and C = (0.75, 0.7) outside
+  const A = [0.75, 0.5], B = [0.95, 0.5], C = [0.75, 0.7];
+  const lin = cutTriangle(ls.phi, A, B, C);
+  assert(lin.tris instanceof Float64Array && lin.segs instanceof Float64Array, 'typed');
+  assert(lin.tris.length === 6 && lin.segs.length === 6 && lin.curved.length === 0, 'one vertex inside: one sub-triangle, one segment');
+  // sub-triangles are CCW, the segment normal is the outward normal (φ increases along it)
+  const [ax, ay, bx, by, cx, cy] = lin.tris;
+  assert((bx - ax) * (cy - ay) - (cx - ax) * (by - ay) > 0, 'CCW');
+  const [px, py, qx, qy, nx, ny] = lin.segs, mx = (px + qx) / 2, my = (py + qy) / 2;
+  assert(ls.phi(mx + 1e-3 * nx, my + 1e-3 * ny) > ls.phi(mx, my), 'outward normal');
+  assertClose(Math.hypot(nx, ny), 1, 1e-14);
+  assertClose(lin.area, 0.5 * Math.hypot(px - 0.75, py - 0.5) * Math.hypot(qx - 0.75, qy - 0.5), 1e-15, 0, 'area of the corner triangle');
+  const cur = cutTriangle(ls.phi, A, B, C, { curved: ls });
+  assert(cur.curved instanceof Float64Array && cur.curved.length === 4 && cur.arcs.length === 2 && cur.tris.length === 0, 'curved piece');
+  // exact: Γ crosses AB at P* = (0.8, 0.5) and AC at Q* = (0.75, 0.5 + √(0.3² − 0.25²));
+  // K ∩ Ω = triangle A P* Q* + circular segment over the chord P*Q*
+  const yq = 0.5 + Math.sqrt(0.09 - 0.0625), chord = Math.hypot(0.05, yq - 0.5), th = 2 * Math.asin(chord / 0.6);
+  assertClose(cur.area, 0.5 * 0.05 * (yq - 0.5) + 0.5 * 0.09 * (th - Math.sin(th)), 1e-14, 0, 'curved area = triangle A P* Q* + circular segment');
 });

@@ -113,13 +113,39 @@ test('WEB-spline Galerkin: L2 rate n+1, H1 rate n (circle, n = 1, 2, 3)', () => 
   }
 });
 
-test('WEB-spline Galerkin on the flower: L2 rate at least n+1 (pre-asymptotic, erratic), n = 1, 2', () => {
+test('WEB-spline Galerkin on the flower: L2 rate ≥ n+1 and H1 rate ≥ n for n = 1, 2, 3 (N = 32 → 64)', () => {
+  // Rates are measured between the two finest grids; on the flower they approach n+1 / n from above
+  // (measured L2: 2.2, 3.1, 4.3; H1: 1.1, 2.1, 3.2). With the old C² weight (γ = 3) the n = 3 rate was 2.2.
   const ls = flowerLS(FLOWER), W = weightFunction(ls), gt = blendedExtension(W, S.u, S.grad);
-  for (const n of [1, 2]) {
-    const hs = [], L2 = [];
-    for (const N of [16, 32, 64]) { hs.push(1 / N); L2.push(errorsWEB(solveWEB(ls, { n, N, f: S.f, gt }), S.u, S.grad).L2); }
-    const r = fitRate(hs, L2);
-    assert(r > n + 1 - 0.2 && r < n + 2.5, `flower n=${n} L2 rate ${r}`);
+  for (const n of [1, 2, 3]) {
+    const hs = [], L2 = [], H1 = [];
+    for (const N of [32, 64]) {
+      const e = errorsWEB(solveWEB(ls, { n, N, f: S.f, gt }), S.u, S.grad);
+      hs.push(1 / N); L2.push(e.L2); H1.push(e.H1);
+    }
+    assertRate(fitRate(hs, L2, 2), n + 1, `flower n=${n} L2`, 0.2, 0.6);
+    assertRate(fitRate(hs, H1, 2), n, `flower n=${n} H1`, 0.2, 0.5);
+  }
+});
+
+test('weight smoothness matters for the quadrature: the C² weight (γ = 3) spoils cubic WEB-splines on the flower', () => {
+  // Same space, same exact solution; only the exponent of the regularised-distance weight differs. The plateau
+  // edge of w crosses inside cells integrated by tensor Gauss rules, so a kink in w''' shows up as quadrature error.
+  const ls = flowerLS(FLOWER);
+  const err = (gamma, N) => {
+    const W = weightFunction(ls, { gamma });
+    return errorsWEB(solveWEB(ls, { n: 3, N, f: S.f, weight: W, gt: blendedExtension(W, S.u, S.grad) }), S.u, S.grad).L2;
+  };
+  assert(weightFunction(ls).gamma === 6, 'default exponent γ = 6');
+  const e3 = err(3, 64), e6 = err(6, 64);
+  assert(e3 > 100 * e6, `γ = 3: ${e3}, γ = 6: ${e6}`);
+  // both weights vanish on Γ with unit slope (w ≈ −φ) and are constant deep inside
+  for (const gamma of [3, 6]) {
+    const W = weightFunction(ls, { gamma }), [x, y] = ls.point(0.7), [gx, gy] = ls.grad(x, y), [wx, wy] = W.grad(x, y);
+    assertClose(W.w(x, y), 0, 1e-14);
+    assertClose(wx, -gx, 1e-12); assertClose(wy, -gy, 1e-12);
+    assertClose(W.w(ls.cx, ls.cy), W.delta / gamma, 1e-15);
+    assert(W.grad(ls.cx + 0.01, ls.cy)[0] === 0, 'plateau');
   }
 });
 

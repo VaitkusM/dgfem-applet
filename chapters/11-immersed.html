@@ -38,6 +38,7 @@ $-\Delta u = f$ in $\Omega$, $u = g$ on $\Gamma = \partial\Omega$ and verifies a
 <tr><td>$\mathbf d(\tilde{\mathbf x})$, $M(\tilde{\mathbf x})$</td><td>distance vector from a surrogate-boundary point to its closest point $M(\tilde{\mathbf x}) = \tilde{\mathbf x} + \mathbf d$ on $\Gamma$</td></tr>
 <tr><td>$b_k$, $n$, $k=(k_1,k_2)$</td><td>tensor-product B-spline of degree $n$ with index $k$ on a grid of width $h$</td></tr>
 <tr><td>$w$, $e_{i,j}$, $B_i$</td><td>weight function, extension coefficients, WEB-spline basis functions</td></tr>
+<tr><td>$U_i^n$, $h_i$, $\nu$</td><td>(flow example) cell average in cell $i$ at time step $n$, cell width, full-cell CFL number $\nu = a\Delta t/h$</td></tr>
 </table>
 </div>
 
@@ -102,7 +103,7 @@ linearly. The error drops by about $4^{-L}$ at the cost of more quadrature point
 declared uncut without further splitting when all its vertex values have the same sign and $\min|\phi| &gt; \text{Lip}(\phi)\cdot\operatorname{diam}$.</li>
 <li><b>Curved cut:</b> find the exact edge crossings (1D root finding on each edge) and integrate the inside part as "curved triangles"
 $\{A + r\,(\mathbf C(\tau) - A)\}$ whose curved side $\mathbf C(\tau)$ follows the parametrised $\Gamma$. This removes the geometric error up to quadrature
-error (the tests reproduce area and perimeter to $10^{-12}$); the WEB-spline solver below needs it to show its higher-order rates.</li>
+error (the tests reproduce the area to $10^{-12}$ and the perimeter to $10^{-11}$); the WEB-spline solver below needs it to show its higher-order rates.</li>
 </ul>
 
 <figure class="widget" id="w-geometry">
@@ -122,7 +123,8 @@ This is the <span class="term" data-g="smallcut">small-cut problem</span>. It ha
 <li><b>Elliptic problems</b>: ill-conditioning (iterative solvers stall, direct solvers lose digits), and also <em>loss of stability</em> of Nitsche's method,
 because its penalty argument (chapter 4) needs the full element, not the sliver inside $\Omega$ — see below.</li>
 <li><b>Explicit time stepping</b> for transport (finite volumes, DG): a cut cell with volume $\alpha_K|K|$ but faces of length $\sim h$ obeys a CFL condition
-of roughly $\Delta t \lesssim \alpha_K h/|\mathbf a|$. A single sliver cell with $\alpha_K = 10^{-6}$ would force a million times more time steps.</li>
+of roughly $\Delta t \lesssim \alpha_K h/|\mathbf a|$. A single sliver cell with $\alpha_K = 10^{-6}$ would force a million times more time steps.
+The <a href="#cutfv">flow example</a> further down shows this instability, and two cures, in one dimension.</li>
 </ul>
 <p>Every immersed method is, at its heart, a strategy against small cuts: penalise them (CutFEM), merge them with neighbours (agglomeration, AgFEM),
 extrapolate them away (WEB-splines), redistribute their updates (state redistribution) or avoid them altogether (SBM).</p>
@@ -167,7 +169,9 @@ continued". It is a smoothness prior on the fictitious part of the active mesh �
 <figure class="widget" id="w-cutfem">
 <figcaption><b>CutFEM with and without ghost penalty.</b> Left: the CutFEM solution on the active mesh — note that it is also defined on the part of cut
 elements outside $\Gamma$; purple faces carry the ghost penalty. Right: the domain slides diagonally across one cell ($s$ from 0 to 1), and for every position
-the condition number $\kappa(A)$ (Lanczos estimate, absolute values for indefinite matrices) times $h^2$ is computed with and without ghost penalty. With it the
+the condition number $\kappa(A)$ times $h^2$ is computed with and without ghost penalty. ($\kappa$ is estimated with the
+<span class="term" data-g="lanczos">Lanczos method</span>, an iteration that approximates the extreme eigenvalues of a symmetric matrix using only
+matrix–vector products; for indefinite matrices we use the eigenvalues of largest and smallest absolute value.) With it the
 curve stays flat; without it, spikes appear whenever a cut becomes small. The manufactured solution is $u = \cos(\pi x)\,e^{y}$, $\gamma = 10$.</figcaption>
 </figure>
 
@@ -177,8 +181,8 @@ curve stays flat; without it, spikes appear whenever a cut becomes small. The ma
 <li>Switch the ghost penalty off and move the shift slider onto a spike of the orange curve. The error read-out may still look fine — ill-conditioning is
 a property of the linear system, and a direct solver copes until it doesn't. The conjugate-gradient method would need $\sim\sqrt{\kappa}$ iterations — if it
 applies at all: without the ghost penalty the matrix can even be indefinite.</li>
-<li>Turn $\gamma_g$ down to $10^{-3}$: the green curve rises towards the orange one. Turn it up to 1: still flat, but the error grows a little — the penalty
-starts to over-smooth.</li>
+<li>Turn $\gamma_g$ down to $10^{-3}$: the green curve rises towards the orange one ($\kappa h^2$ reaches several thousand). Turn it up to 1: still flat, but
+the $L^2$ error roughly doubles (from $3.6\cdot10^{-3}$ to $7.9\cdot10^{-3}$ at the default setting) — the penalty starts to over-smooth.</li>
 </ul>
 </div>
 
@@ -196,8 +200,10 @@ $$u(\tilde{\mathbf x} + \mathbf d) = u(\tilde{\mathbf x}) + \nabla u(\tilde{\mat
 so on $\tilde\Gamma_h$ we impose the <em>shifted</em> condition $u + \nabla u\cdot\mathbf d = \bar g$, with $\bar g(\tilde{\mathbf x}) := g(M(\tilde{\mathbf x}))$.
 Since $|\mathbf d| = O(h)$, the neglected term is $O(h^2)$ — consistent with second-order P1 accuracy.</li>
 </ol>
-<p>The condition is imposed à la Nitsche on $\tilde\Gamma_h$. The weak form of Main &amp; Scovazzi (Part I, Poisson) reads: find $u_h$ on $\tilde\Omega_h$ such that
-for all $v$</p>
+<p>The condition is imposed à la Nitsche on $\tilde\Gamma_h$. We use the weak form of Main &amp; Scovazzi (Part I, their equation (16) for the Poisson problem)
+<em>without</em> its last term, an extra penalty $\beta h\int_{\tilde\Gamma_h}\partial_\tau v\,(\partial_\tau u_h - \partial_\tau\bar g)$ on tangential derivatives
+that the authors introduced to simplify their stability proof (they report that all but one of their own computations used $\beta = 0$). Atallah, Canuto &amp;
+Scovazzi (2020) later proved stability and convergence without that term; the form below is their equation (16). Find $u_h$ on $\tilde\Omega_h$ such that for all $v$</p>
 $$\int_{\tilde\Omega_h}\nabla v\cdot\nabla u_h - \int_{\tilde\Gamma_h} v\,\nabla u_h\cdot\tilde{\mathbf n} - \int_{\tilde\Gamma_h}\nabla v\cdot\tilde{\mathbf n}\,\big(u_h + \nabla u_h\cdot\mathbf d\big)
 + \frac{\alpha}{h}\int_{\tilde\Gamma_h}\big(v + \nabla v\cdot\mathbf d\big)\big(u_h + \nabla u_h\cdot\mathbf d\big)$$
 $$= \int_{\tilde\Omega_h} v f - \int_{\tilde\Gamma_h}\nabla v\cdot\tilde{\mathbf n}\;\bar g + \frac{\alpha}{h}\int_{\tilde\Gamma_h}\big(v + \nabla v\cdot\mathbf d\big)\,\bar g .$$
@@ -235,9 +241,14 @@ and $|\nabla w|\ne 0$ on $\Gamma$ (linear growth, like a distance). Every functi
 homogeneous Dirichlet condition is built into the space, as in chapter 3, without a fitted mesh. We use</p>
 <ul>
 <li>circle: $w = (R^2 - |\mathbf x - \mathbf c|^2)/(2R)$, a polynomial with $w\approx R - r$ near $\Gamma$;</li>
-<li>flower: Höllig's regularised distance $w = \tfrac{\delta}{3}\big(1 - (1 - t)^3\big)$ with $t = -\phi/\delta$ for $0\le t\le 1$ and $w = \delta/3$ deeper inside.
-It is $C^2$, $w\approx-\phi$ near $\Gamma$, and with $\delta = 0.4\min_\theta R(\theta)$ the non-smooth centre of $\phi$ lies where $w$ is constant.</li>
+<li>flower: Höllig's regularised distance $w = \tfrac{\delta}{\gamma}\big(1 - (1 - t)^\gamma\big)$ with $t = -\phi/\delta$ for $0\le t\le 1$ and $w = \delta/\gamma$ deeper inside,
+with the exponent $\gamma = 6$. It is $C^{\gamma-1} = C^5$, $w\approx-\phi$ near $\Gamma$, and with $\delta = 0.4\min_\theta R(\theta)$ the non-smooth centre of $\phi$ lies where $w$ is constant.</li>
 </ul>
+<p>The smoothness of $w$ matters more than one might expect. The edge of the plateau ($t = 1$) runs through <em>inside</em> grid cells, and those are integrated
+with ordinary Gauss rules, which are only accurate for smooth integrands. With the seemingly natural choice $\gamma = 3$ (a $C^2$ weight) the jump in the third
+derivative of $w$ leaves a quadrature error that spoils the cubic WEB-splines on the flower: their $L^2$ error at $h = 1/64$ is $3\cdot10^{-8}$ instead of
+$3\cdot10^{-11}$, and the observed rates jump between 2 and 5 (tested). This is a quadrature effect, not an approximation effect: the function the splines have to
+approximate, $(u - \tilde g)/w$, is the same smooth function in both cases.</p>
 <p>(R-functions of Rvachev give smooth weights for domains built by Boolean operations — the CSG trees of solid modelling.)</p>
 
 <p><b>Idea 2 — extension makes the basis stable.</b> Classify the grid cells (inside, cut, outside) and the B-splines:</p>
@@ -273,7 +284,8 @@ with Gauss rules on inside cells and the curved cut quadrature on cut cells.</p>
 <figcaption><b>WEB-splines.</b> Left: grid cells inside (green) and cut (orange); every relevant B-spline is a dot at the centre of its support — filled for
 inner, ring for outer. Click an outer dot to see its array $I(j)$ and the extension coefficients $e_{i,j}$ (they sum to 1 because constants are reproduced);
 click an inner dot to see the outer B-splines $J(i)$ it absorbs, and choose "selected WEB-spline" on the right to see $B_i$ itself. Switching the extension
-off keeps every relevant B-spline as an unknown: the Jacobi-scaled condition number in the read-out grows (dramatically for $n\ge2$ when a cut is tiny).</figcaption>
+off keeps every relevant B-spline as an unknown (the purely <em>weighted</em> method): the dots keep their inner/outer colours, but every one of them is now
+an unknown with the basis function $w\,b_k$, and the Jacobi-scaled condition number in the read-out grows (dramatically for $n\ge2$ when a cut is tiny).</figcaption>
 </figure>
 
 <div class="box try">
@@ -289,9 +301,10 @@ extrapolation, not interpolation.</li>
 <figure class="widget" id="w-conv">
 <figcaption><b>Convergence on a fixed domain</b> (circle $R = 0.33$ or flower $R = 0.3$, $a = 0.2$, $k = 5$; manufactured solution $u = \cos(\pi x)e^{y}$).
 Errors are measured where each method lives: CutFEM on $\Omega_h$, SBM on $\tilde\Omega_h$, WEB-splines on $\Omega$. Expected (and tested) rates: CutFEM P1 and
-shifted SBM P1 have $L^2$ rate 2 and $H^1$ rate 1; unshifted SBM has $L^2$ rate 1; WEB-splines of degree $n$ have $L^2$ rate $n+1$ and $H^1$ rate $n$. On the
-flower the WEB-spline rates are erratic on coarse grids (pre-asymptotic behaviour) and settle down as $h$ shrinks. The computation runs
-in the background after the page loads.</figcaption>
+shifted SBM P1 have $L^2$ rate 2 and $H^1$ rate 1; unshifted SBM has $L^2$ rate 1; WEB-splines of degree $n$ have $L^2$ rate $n+1$ and $H^1$ rate $n$.
+The read-out shows the rate between the two finest grids. On the circle the WEB-spline rates are close to $n+1$ from $h = 1/16$ on. On the flower the coarse grids
+($h = 1/8$, $1/16$) do not resolve the five petals, the error first drops faster than the asymptotic rate, and between $h = 1/32$ and $1/64$ we measure
+2.2, 3.1 and 4.3 for $n = 1, 2, 3$ (4.1 one refinement further). The computation runs in the background after the page loads.</figcaption>
 </figure>
 
 <table class="data">
@@ -300,6 +313,68 @@ in the background after the page loads.</figcaption>
 <tr><td>Shifted Boundary Method</td><td>surrogate mesh</td><td>weak, shifted by Taylor</td><td>no</td><td>no cut cells</td><td>non-symmetric</td></tr>
 <tr><td>WEB-splines</td><td>inner B-splines</td><td>strong (weight function)</td><td>yes</td><td>extension</td><td>SPD</td></tr>
 </table>
+
+<h2 id="cutfv">A flow example: small cells and the time step</h2>
+<p>So far every example was elliptic. For flow problems, which are advanced with <em>explicit</em> time steps (chapters 5–7), the small-cut problem shows a second
+face: the time-step restriction. Its essence fits in one space dimension. Take the advection equation $u_t + a\,u_x = 0$ with $a &gt; 0$ on a periodic interval and
+a grid of $N$ full cells of width $h$ plus <em>one</em> small cell of width $\alpha h$, $0 &lt; \alpha\le1$. This small cell stands for a cut cell with volume fraction
+$\alpha_K = \alpha$. It is the model problem of Berger &amp; Giuliani (2021).</p>
+<p>The first-order <span class="term" data-g="upwind">upwind</span> finite volume scheme of chapter 5 updates the <span class="term" data-g="cellavg">cell averages</span>
+with the flux $a\,U_{i-1}$ entering from the left and $a\,U_i$ leaving to the right, with one time step $\Delta t$ for all cells:</p>
+$$\hat U_i = U_i^n - \frac{a\,\Delta t}{h_i}\,\big(U_i^n - U_{i-1}^n\big),\qquad h_i = h\ \text{or}\ \alpha h .$$
+<p>Write $\nu = a\Delta t/h$ for the <span class="term" data-g="cfl">CFL number</span> of the full cells. On a full cell $\hat U_i = (1-\nu)U_i + \nu U_{i-1}$ is a
+weighted mean of old values as long as $\nu\le1$. In the small cell $s$ the same formula reads</p>
+$$\hat U_s = \Big(1 - \frac{\nu}{\alpha}\Big)\,U_s^n + \frac{\nu}{\alpha}\,U_{s-1}^n .$$
+<p>Its local CFL number is $\nu/\alpha$. Three regimes follow (all tested):</p>
+<ul>
+<li>$\nu\le\alpha$: both weights are non-negative, the scheme is <span class="term" data-g="monotone">monotone</span>, as on a uniform grid. But this means
+$\Delta t\le\alpha h/a$: the smallest cell dictates the time step of the whole computation.</li>
+<li>$\alpha &lt; \nu &lt; 2\alpha$: the weight $1-\nu/\alpha$ is negative but larger than $-1$. The small cell over- and undershoots, yet the solution stays bounded.</li>
+<li>$\nu &gt; 2\alpha$: the old value of the small cell is multiplied by $1 - \nu/\alpha &lt; -1$ in every step. The scheme blows up exponentially with exactly this
+factor per step, and the garbage is advected into all cells downstream. With $\alpha = 0.1$ and $\nu = 0.8$ the factor is $-7$.</li>
+</ul>
+<p>Note that the scheme stays <em>conservative</em> throughout: the fluxes telescope, and the total mass $\sum_i h_iU_i$ is exact to round-off even while the
+solution explodes. Conservation alone does not give stability. Two cures let us keep the full-cell time step. Both are written as a
+<em>postprocessing</em> of the provisional values $\hat U_i$:</p>
+<ul>
+<li><b>Cell merging.</b> Replace the small cell and one neighbour (we take the left one) by their volume-weighted mean,
+$U_{s-1}^{n+1} = U_s^{n+1} = (\hat U_{s-1} + \alpha\hat U_s)/(1+\alpha)$. This is the same as running the upwind scheme on a grid where the two cells are a single
+cell of width $(1+\alpha)h$ (tested), so it is monotone for $\nu\le1$. Simple in 1D, but in 2D and 3D finding good merging partners for every cut cell
+of a complicated geometry is a hard meshing problem again.</li>
+<li><b>State redistribution</b> (Berger &amp; Giuliani 2021). The small cell is merged only <em>temporarily</em>, with both neighbours, into a
+<em>neighbourhood</em> $\{s-1, s, s+1\}$; every full cell is its own neighbourhood. Neighbourhoods may overlap, so each cell counts how many neighbourhoods contain it
+($N_{s\pm1} = 2$, all others 1), and its volume is shared among them. The weighted neighbourhood average of the small cell and the final values are
+$$\hat Q_s = \frac{\tfrac12\hat U_{s-1} + \alpha\,\hat U_s + \tfrac12\hat U_{s+1}}{1+\alpha},\qquad
+U_s^{n+1} = \hat Q_s,\qquad U_{s\pm1}^{n+1} = \tfrac12\big(\hat U_{s\pm1} + \hat Q_s\big).$$
+The dangerous value $\hat U_s$ only enters multiplied by $\alpha$, and $\alpha\hat U_s = \alpha U_s - \nu(U_s - U_{s-1})$ is harmless for every $\alpha$. Mass is
+conserved: $\tfrac12(\hat U_{s-1} + \hat Q_s) + \alpha\hat Q_s + \tfrac12(\hat U_{s+1} + \hat Q_s) = \hat U_{s-1} + \alpha\hat U_s + \hat U_{s+1}$. The grid, its
+unknowns and the flux computation are untouched, which is what makes the idea practical in 2D and 3D. Cells with $\alpha\ge\tfrac12$ are left alone (they
+are in the bounded regime for every $\nu &lt; 1$). The method is not monotone: a spike in the small cell is mapped to $(\alpha - \nu/2)/(1+\alpha)$, which is negative for
+$\nu &gt; 2\alpha$ (tested). In our tests it nevertheless stays bounded for all $\alpha &lt; \tfrac12$ and $\nu\le1$, and for the two profiles of the widget it
+produces no visible over- or undershoot.</li>
+</ul>
+<p>Both cures are first-order accurate here, like the upwind scheme itself: at $\nu = 0.8$ and $\alpha = 10^{-3}$ the $L^1$ error halves with $h$ (measured rates
+between 0.96 and 1.05, approaching 1 under refinement; tested). Berger &amp; Giuliani combine state redistribution with gradient reconstruction in the neighbourhoods to keep second-order base schemes
+second order; we show only the piecewise-constant version.</p>
+
+<figure class="widget" id="w-cutfv">
+<figcaption><b>The small-cell problem of explicit cut-cell finite volumes.</b> Upwind scheme for $u_t + u_x = 0$ on a periodic grid with one small cell
+(orange line; the purple band is its merging neighbourhood). Top: cell averages and the exact solution. Bottom: $\max_i|U_i^n|$ on a logarithmic scale; for the
+unstable scheme the dashed line has the predicted slope $|1-\nu/\alpha|$ per step. Press play with "no fix" ($\alpha = 0.1$, $\nu = 0.8$): the run is stopped when
+$|U|$ exceeds $10^6$, after 10 steps. Then try the two fixes at the same $\nu$, and move $\alpha$ down to $10^{-3}$: nothing changes for them.</figcaption>
+</figure>
+
+<div class="box try">
+<span class="box-title">Try this</span>
+<ul>
+<li>"No fix", $\alpha = 0.5$: slide $\nu$ from 0.4 (monotone) to 0.9 (bounded, but the square pulse overshoots by about 30 %).
+Then $\alpha = 0.3$ and $\nu = 0.65$: just beyond $2\alpha$, a slow blow-up with factor $-1.17$ per step that takes about 100 steps to reach $10^6$.</li>
+<li>State redistribution with $\alpha$ just above $\tfrac12$ and $\nu = 0.9$: the cell counts as "large enough" and is left alone, and the same overshoot
+appears. The threshold $\tfrac12$ guarantees boundedness, not monotonicity.</li>
+<li>Compare cell merging and state redistribution on the smooth bump: the $L^1$ errors in the read-out are almost the same, and both are dominated by the
+smearing of the first-order upwind scheme, not by the small cell.</li>
+</ul>
+</div>
 
 <h2 id="variants">Variants and relatives</h2>
 <ul>
@@ -312,11 +387,26 @@ of WEB-spline extension, yielding condition numbers independent of the cut.</li>
 <li><b>Cell agglomeration in cut DG</b>: discontinuous Galerkin (chapters 6 and 8) allows arbitrary element shapes, so a small cut cell can simply be merged with a
 neighbour into one bigger element with a single polynomial (Johansson &amp; Larson 2013 for elliptic problems; Müller, Krämer-Eis, Kummer &amp; Oberlack 2017 for
 compressible flow with immersed boundaries).</li>
-<li><b>Cut-cell finite volumes</b> fight the time-step restriction: the <b>h-box method</b> (Berger, Helzel &amp; LeVeque 2003) computes fluxes from boxes of
-regular length $h$ that reach into neighbouring cells, and <b>state redistribution</b> (Berger &amp; Giuliani 2021) performs the unstable update with the
-regular time step and then redistributes the solution conservatively over overlapping neighbourhoods of small cells.</li>
-<li><b>SBM extensions</b>: Part II of Main &amp; Scovazzi covers advection–diffusion and Navier–Stokes; Atallah, Canuto &amp; Scovazzi analysed the method and extended
-it to Neumann conditions (the "second-generation" SBM) and to higher order (higher-order Taylor expansions, which need higher derivatives of $u_h$).</li>
+<li><b>Cut-cell finite volumes</b> fight the time-step restriction. Besides cell merging and <b>state redistribution</b> (both in the flow example above), there are
+<b>flux redistribution</b> (Chern &amp; Colella 1987), which gives the small cell only the fraction $\alpha_K$ of its update and hands the rest of the mass to its
+neighbours, and the <b>h-box method</b> (Berger, Helzel &amp; LeVeque 2003), which computes fluxes from boxes of regular length $h$ that reach into neighbouring cells.</li>
+<li><b>Ghost-penalty realisations.</b> The face-based form used above (jumps of normal derivatives, of all orders up to $p$ for degree $p$) is the classical one.
+Alternatives penalise, on the patch $K^-\cup K^+$ of the two elements sharing a face, the difference between the two neighbouring polynomials extended to the whole
+patch; this needs no derivatives and is convenient for high order. Ghost penalty, aggregation/extension and tailored preconditioners are compared in the review of
+de Prenter, Verhoosel, van Brummelen, Larson &amp; Badia (2023).</li>
+<li><b>SBM extensions.</b> Part I of Main &amp; Scovazzi already treats the Stokes problem and embedded Neumann conditions (its Section 4); Part II covers
+advection–diffusion and Navier–Stokes. The "second-generation" SBM of Atallah, Canuto &amp; Scovazzi (2020) simplifies the formulation (no tangential stabilisation
+term, no assumption that the true and the surrogate normals enclose an acute angle) and proves stability and convergence for the Poisson and Stokes problems.
+Their high-order SBM (2022) retains optimal accuracy for finite elements of any order although the surrogate boundary stays piecewise linear, and
+Collins, Lozinski &amp; Scovazzi (2023) proposed a penalty-free SBM of arbitrary order, without a Nitsche parameter to tune.</li>
+<li><b>Relatives of WEB-splines.</b> Using only one of the two ideas gives two older methods. <em>Weights without extension</em> is the classical weighted method
+going back to Kantorovich and to Rvachev's R-function method (Rvachev &amp; Sheiko 1995): boundary conditions are exact, but small cuts make the basis unstable
+— switch the extension off in the widget above. <em>Extension without weights</em> gives "extended B-splines", a stable basis that can be used directly when the boundary conditions are natural;
+Dirichlet data must then be imposed weakly, e.g. by Nitsche's method, which Embar, Dolbow &amp; Harari (2010) studied for spline bases on grids that do not fit
+the boundary. Because a tensor-product grid cannot be refined locally, adaptive versions work with hierarchical spline bases (hierarchical WEB-splines).
+Höllig, Hörner &amp; Hoffacker (2012) survey weighted and isogeometric spline methods side by side.</li>
+<li><b>Immersogeometric analysis</b> (Kamensky et al. 2015) is the name coined for isogeometric (spline-based) analysis on meshes that are not fitted to the
+boundary, introduced for the fluid–structure interaction of heart valves: the spline surface of the valve leaflets is immersed in a background fluid mesh.</li>
 <li><b>The original "immersed boundary method"</b> (Peskin 1972, 2002) is a different animal, designed for fluid–structure interaction (blood flow through
 heart valves). The fluid lives on a Cartesian grid; the elastic structure is a set of Lagrangian marker points. The structure's elastic forces are
 <em>spread</em> to the grid with a regularised (smoothed) delta function a few cells wide, and the markers move with the fluid velocity interpolated back with
@@ -333,7 +423,10 @@ position — the widget above shows how sharp those spikes are. Never judge a cu
 <li><b>Using $|K\cap\Omega|$ as "h"</b> in the Nitsche penalty sounds natural but makes the penalty explode on slivers and the system even worse conditioned;
 use the background element size.</li>
 <li><b>Quadrature that is too crude.</b> The geometric error of the integration domain caps the convergence rate: the linear cut gives at most second order —
-enough for P1, not for the higher-degree WEB-splines, which here need the curved cut.</li>
+enough for P1, not for the higher-degree WEB-splines, which here need the curved cut. The same holds for integrands that are not smooth <em>inside</em> a cell:
+a $C^2$ weight function is enough to spoil cubic WEB-splines.</li>
+<li><b>Explicit time stepping with the full-cell time step.</b> A conservative cut-cell finite volume scheme without merging or redistribution blows up as soon as
+one cell has $\alpha_K &lt; \nu/2$, and conservation does not help.</li>
 <li><b>Level sets that are not distances.</b> Tests like "$|\phi| &gt; \operatorname{diam}K$ ⇒ not cut" or sphere tracing assume an SDF (or a known Lipschitz bound).
 The flower $\phi = r - R(\theta)$ is not one.</li>
 <li><b>Forgetting the shift.</b> Imposing the boundary data on the staircase $\tilde\Gamma_h$ as if it were $\Gamma$ costs one order of accuracy.</li>
@@ -347,7 +440,10 @@ The flower $\phi = r - R(\theta)$ is not one.</li>
 <li>The small-cut problem — arbitrarily small volume fractions $\alpha_K$ — destroys conditioning (and explicit time steps) unless the method is stabilised.</li>
 <li>CutFEM = Nitsche on $\Gamma_h$ + ghost penalty $\gamma_g\sum_F h\int_F[\partial_n u][\partial_n v]$: optimal P1 rates and $\kappa(A) = O(h^{-2})$ for every cut.</li>
 <li>SBM: no cut cells; impose $u + \nabla u\cdot\mathbf d = g(\tilde{\mathbf x} + \mathbf d)$ on the surrogate boundary. The shift restores second order.</li>
-<li>WEB-splines: weight function $w$ for strong Dirichlet conditions, extension of outer B-splines for stability; rate $n+1$ in $L^2$ for degree $n$.</li>
+<li>WEB-splines: weight function $w$ for strong Dirichlet conditions, extension of outer B-splines for stability; rate $n+1$ in $L^2$ for degree $n$
+(with a sufficiently smooth weight and accurate cut quadrature).</li>
+<li>Explicit flow solvers: a cut cell of volume fraction $\alpha$ has the local CFL number $\nu/\alpha$; the upwind scheme is monotone only for $\nu\le\alpha$ and
+blows up for $\nu &gt; 2\alpha$. Cell merging and state redistribution restore the full-cell time step, conservatively.</li>
 </ul>
 
 <h2 id="references">References</h2>
@@ -366,10 +462,19 @@ The flower $\phi = r - R(\theta)$ is not one.</li>
 <li>E. Burman, S. Claus, P. Hansbo, M. G. Larson, A. Massing, CutFEM: discretizing geometry and partial differential equations, <em>Int. J. Numer. Meth. Engng.</em> 104 (2015).</li>
 <li>A. Main, G. Scovazzi, The shifted boundary method for embedded domain computations. Part I: Poisson and Stokes problems; Part II: Linear advection–diffusion
 and incompressible Navier–Stokes equations, <em>J. Comput. Phys.</em> 372 (2018).</li>
-<li>N. M. Atallah, C. Canuto, G. Scovazzi, The second-generation Shifted Boundary Method and its numerical analysis, <em>Comput. Methods Appl. Mech. Engrg.</em> (2020);
-The high-order Shifted Boundary Method and its analysis, <em>Comput. Methods Appl. Mech. Engrg.</em> (2022).</li>
+<li>N. M. Atallah, C. Canuto, G. Scovazzi, The second-generation Shifted Boundary Method and its numerical analysis, <em>Comput. Methods Appl. Mech. Engrg.</em> 372 (2020);
+The high-order Shifted Boundary Method and its analysis, <em>Comput. Methods Appl. Mech. Engrg.</em> 394 (2022).</li>
+<li>J. H. Collins, A. Lozinski, G. Scovazzi, A penalty-free Shifted Boundary Method of arbitrary order, <em>Comput. Methods Appl. Mech. Engrg.</em> 417 (2023).</li>
 <li>K. Höllig, U. Reif, J. Wipper, Weighted extended B-spline approximation of Dirichlet problems, <em>SIAM J. Numer. Anal.</em> 39 (2001).</li>
 <li>K. Höllig, <em>Finite Element Methods with B-Splines</em>, SIAM (2003).</li>
+<li>K. Höllig, J. Hörner, A. Hoffacker, Finite element analysis with B-splines: weighted and isogeometric methods, in: <em>Curves and Surfaces 2010</em>,
+Lecture Notes in Computer Science 6920, Springer (2012), 330–350.</li>
+<li>V. L. Rvachev, T. I. Sheiko, R-functions in boundary value problems in mechanics, <em>Appl. Mech. Rev.</em> 48 (1995), 151–188.</li>
+<li>A. Embar, J. Dolbow, I. Harari, Imposing Dirichlet boundary conditions with Nitsche's method and spline-based finite elements, <em>Int. J. Numer. Meth. Engng.</em> 83 (2010), 877–898.</li>
+<li>D. Kamensky, M.-C. Hsu, D. Schillinger, J. A. Evans, A. Aggarwal, Y. Bazilevs, M. S. Sacks, T. J. R. Hughes, An immersogeometric variational framework for
+fluid–structure interaction: application to bioprosthetic heart valves, <em>Comput. Methods Appl. Mech. Engrg.</em> 284 (2015), 1005–1053.</li>
+<li>F. de Prenter, C. V. Verhoosel, E. H. van Brummelen, M. G. Larson, S. Badia, Stability and conditioning of immersed finite element methods: analysis and
+remedies, <em>Arch. Comput. Methods Eng.</em> 30 (2023), 3617–3656.</li>
 <li>M. Marsden, An identity for spline functions with applications to variation-diminishing spline approximation, <em>J. Approx. Theory</em> 3 (1970).</li>
 <li>J. Parvizian, A. Düster, E. Rank, Finite cell method: h- and p-extension for embedded domain problems in solid mechanics, <em>Comput. Mech.</em> 41 (2007).</li>
 <li>S. Badia, F. Verdugo, A. F. Martín, The aggregated unfitted finite element method for elliptic problems, <em>Comput. Methods Appl. Mech. Engrg.</em> 336 (2018).</li>
@@ -378,6 +483,8 @@ The high-order Shifted Boundary Method and its analysis, <em>Comput. Methods App
 <em>Int. J. Numer. Meth. Engng.</em> 110 (2017).</li>
 <li>M. J. Berger, C. Helzel, R. J. LeVeque, H-box methods for the approximation of hyperbolic conservation laws on irregular grids, <em>SIAM J. Numer. Anal.</em> 41 (2003).</li>
 <li>M. Berger, A. Giuliani, A state redistribution algorithm for finite volume schemes on cut cell meshes, <em>J. Comput. Phys.</em> 428 (2021).</li>
+<li>M. J. Berger, A note on the stability of cut cells and cell merging, <em>Appl. Numer. Math.</em> 96 (2016), 180–186.</li>
+<li>I.-L. Chern, P. Colella, A conservative front tracking method for hyperbolic conservation laws, Technical Report UCRL-97200, Lawrence Livermore National Laboratory (1987).</li>
 </ul>
 
 </main>

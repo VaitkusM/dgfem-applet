@@ -10,6 +10,7 @@ import { triGrid } from '../../lib/core/mesh/structured.js';
 import { solvePoissonCG } from '../../lib/core/elliptic/cg.js';
 import { sparseSolve, sparseLU } from '../../lib/core/la/direct.js';
 import { csrGet, csrSymmetryError, csrMatVec } from '../../lib/core/la/sparse.js';
+import { symEig } from '../../lib/core/la/dense.js';
 
 const maxDiff = (a, b) => { let m = 0; for (let i = 0; i < a.length; i++) m = Math.max(m, Math.abs(a[i] - b[i])); return m; };
 const f = (x, y) => Math.sin(3 * x) * (1 + y * y) + 1;
@@ -69,13 +70,10 @@ test('ASM preconditioner is symmetric positive definite; RAS is not symmetric', 
     for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) { asym = Math.max(asym, Math.abs(M[i * n + j] - M[j * n + i])); rasym = Math.max(rasym, Math.abs(R[i * n + j] - R[j * n + i])); }
     assert(asym < 1e-13, `ASM symmetric (${coarse})`);
     assert(rasym > 1e-3, `RAS non-symmetric (${coarse})`);
-    // positive: rᵀ M r > 0 for some random vectors
-    let seed = 3;
-    for (let t = 0; t < 5; t++) {
-      for (let i = 0; i < n; i++) { seed = (seed * 16807) % 2147483647; e[i] = seed / 2147483647 - 0.5; }
-      applyASM(dd, e, z);
-      assert(e.reduce((s, v, i) => s + v * z[i], 0) > 0, 'positive');
-    }
+    // positive definite: ALL eigenvalues of the (symmetrised) dense matrix of M⁻¹ are > 0
+    for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) M[i * n + j] = M[j * n + i] = 0.5 * (M[i * n + j] + M[j * n + i]);
+    const ev = symEig(M, n).values;
+    assert(ev[0] > 1e-3, `ASM positive definite (${coarse}): λ_min = ${ev[0]}`);
   }
 });
 
@@ -135,4 +133,17 @@ test('banded LU of the N×N grid problem has bandwidth N − 1 = √n after RCM'
     const F = sparseLU(ddPoissonProblem(N).A);
     assert(F.kl === N - 1 && F.ku === N - 1, `bandwidth ${F.kl}, ${F.ku}`);
   }
+});
+
+test('S is dense only block-wise: full for 2 subdomains, ≈ 70 % for 2×2, ≈ 35 % for 3×3', () => {
+  // two interface unknowns are coupled iff they lie on the boundary of a common subdomain
+  const fill = (Kx, Ky, N) => {
+    const su = schurSetup(ddPoissonProblem(N), Kx, Ky), S = denseSchur(su);
+    let nz = 0; for (const v of S) if (Math.abs(v) > 1e-12) nz++;
+    return nz / S.length;
+  };
+  assert(fill(2, 1, 12) === 1, '2×1: full');
+  const f22 = fill(2, 2, 12), f33 = fill(3, 3, 12);
+  assert(f22 > 0.65 && f22 < 0.75, `2×2 fill ${f22}`);
+  assert(f33 > 0.3 && f33 < 0.4, `3×3 fill ${f33}`);
 });
