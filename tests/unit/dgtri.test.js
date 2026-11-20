@@ -104,3 +104,26 @@ test('sharp polynomial trace inequalities: (p+1)²/h in 1D and (p+1)(p+2)/2·|F|
     assertClose(w(1) ** 2 / l2, (p + 1) ** 2 / h, 1e-9, 1e-12, `1D p=${p}`);
   }
 });
+
+test('Dubiner basis facts used in chapter 8: ψ₀ = √2, hierarchical, orthonormal, ψ_i0 ∝ P_i(a)(1 − ŷ)^i with a = 2x̂/(1 − ŷ) − 1', () => {
+  // hierarchical: the first dimP(q) functions of the degree-p basis are the degree-q basis
+  for (const [x, y] of [[0.2, 0.3], [0.7, 0.1], [0.05, 0.9]]) {
+    const B4 = dubinerBasis(4, x, y);
+    assertClose(B4.v[0], Math.SQRT2, 1e-14);
+    for (const q of [0, 1, 2, 3]) { const Bq = dubinerBasis(q, x, y); for (let m = 0; m < dimP(q); m++) assertClose(B4.v[m], Bq.v[m], 1e-13); }
+  }
+  // orthonormal on the reference triangle (p = 3, as drawn by the widget)
+  const T = basisTables(3, 6, 1), R = T.vol.rule, n = T.n;
+  let dev = 0;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    let s = 0; for (let q = 0; q < R.n; q++) s += R.w[q] * T.vol.V[q * n + i] * T.vol.V[q * n + j];
+    dev = Math.max(dev, Math.abs(s - (i === j ? 1 : 0)));
+  }
+  assert(dev < 1e-13, `orthonormality defect ${dev}`);
+  // collapsed-coordinate formula for the modes (i, 0): index of mode (i,0) is the first of its degree, i(i+1)/2
+  const pts = [[0.2, 0.3], [0.6, 0.25], [0.1, 0.7], [0.45, 0.05]];
+  for (let i = 0; i <= 4; i++) {
+    const ratio = pts.map(([x, y]) => dubinerBasis(4, x, y).v[i * (i + 1) / 2] / (legendreP(i, 2 * x / (1 - y) - 1) * (1 - y) ** i));
+    for (const r of ratio) assertClose(r, ratio[0], 1e-11 * Math.abs(ratio[0]), 0, `mode (${i},0)`);
+  }
+});

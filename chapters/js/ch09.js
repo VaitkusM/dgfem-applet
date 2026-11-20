@@ -27,19 +27,10 @@ import { systemSizes } from '../../lib/core/elliptic/dofcount.js';
 import { csrToDense, nnz } from '../../lib/core/la/sparse.js';
 import { cholesky, inverse } from '../../lib/core/la/dense.js';
 import { pairwiseRates } from '../../lib/core/verify/rates.js';
+import { PROBLEMS, exactRange } from './ellipticcommon.js';
 
-const PROBLEMS = [
-  { value: 'wave', label: 'u = cos(πx)·eʸ' },
-  { value: 'sinsin', label: 'u = sin(πx)·sin(πy)' },
-  { value: 'peak', label: 'Gaussian peak' },
-];
 const meshOf = (N) => triGrid(N, N, [0, 1, 0, 1], { diag: 'alt', jiggle: 0.12 });
 
-function exactRange(u) {
-  let lo = Infinity, hi = -Infinity;
-  for (let i = 0; i <= 60; i++) for (let j = 0; j <= 60; j++) { const v = u(i / 60, j / 60); lo = Math.min(lo, v); hi = Math.max(hi, v); }
-  return [lo, hi];
-}
 const centroid = (mesh, t) => {
   const { nodes, tris } = mesh;
   let x = 0, y = 0;
@@ -264,7 +255,7 @@ function condenseWidget(fig) {
       `stage 2 — Schur complement\n  on the skeleton: ${nLam}×${nLam}`,
     ][stage];
     const sq = (c) => `<span style="color:${c}">■</span>`;
-    out.set(`${txt}\n\nmonolithic: ${n} unknowns\n  ${M.nnzA} non-zeros\ncondensed:  ${nLam} unknowns\n  ${M.keep.length + M.fill.length} non-zeros (${M.fill.length} fill-in)\n`
+    out.set(`${txt}\n\nmonolithic: ${n} unknowns\n  ${M.nnzA} non-zeros\ncondensed:  ${nLam} unknowns\n  ${M.keep.length + M.fill.length} non-zeros (${M.fill.length} fill-in${M.keep.length === 0 ? ':\n  the λ–λ block was empty before' : ''})\n`
       + `−S is SPD: ${M.spd ? '<b class="status-good">yes</b>' : '<b class="status-bad">no</b>'}\n\n`
       + `${sq(C[0])} element–element\n${sq(C[2])} element–λ\n${sq(C[1])} λ–λ\n${sq(C[5])} fill-in`);
   }
@@ -360,7 +351,7 @@ function hdgWidget(fig) {
     const H = solveHDG(mesh, { k: st.k, tau: st.tau, f: S.f, g: S.u });
     const e = hdgErrors(H, S.u, S.grad);
     R = { S, mesh, H, e, ms: performance.now() - t0, range: exactRange(S.u) };
-    selfCheck('hdg: finite', H.u.every(Number.isFinite) && H.lambda.every(Number.isFinite));
+    selfCheck('hdg: finite', H.u.every(Number.isFinite) && H.lambda.every(Number.isFinite) && H.ustar.every(Number.isFinite) && Number.isFinite(e.u + e.q + e.ustar));
     draw();
   }
   let job = 0;
@@ -433,8 +424,11 @@ function hdgWidget(fig) {
       const f = (key) => { const r = pairwiseRates(rows.map((x) => x.h), rows.map((x) => x[key])); return r[r.length - 1].toFixed(2); };
       rates = `\nlast observed rates (τ = ${fmt(CV.tau, 2)}):\n  u_h ${f('u')}, q_h ${f('q')}, u*_h ${f('ustar')}\n  expected ${st.k + 1}, ${st.k + 1}, ${st.k + 2} (τ = O(1))`;
     }
+    // honest hint at the extreme ends of the τ slider (intended experiments, see “Try this”)
+    const hint = st.tau < 0.1 ? '\n<b class="status-bad">small τ: u_h error grows like 1/τ</b>'
+      : st.tau > 10 ? '\n<b class="status-bad">large τ: q_h and u*_h degrade</b>' : '';
     out.set(`global trace system: ${H.nTrace} unknowns\n(local unknowns condensed: ${H.nLocal})\n`
-      + `‖u − u_h‖  = ${fmt(R.e.u)}\n‖q − q_h‖  = ${fmt(R.e.q)}\n‖u − u*_h‖ = ${fmt(R.e.ustar)}\nsolve: ${R.ms.toFixed(0)} ms${rates}`);
+      + `‖u − u_h‖  = ${fmt(R.e.u)}\n‖q − q_h‖  = ${fmt(R.e.q)}\n‖u − u*_h‖ = ${fmt(R.e.ustar)}\nsolve: ${R.ms.toFixed(0)} ms${rates}${hint}`);
   }
   s1.onResize(draw); s2.onResize(draw);
   solve(); conv();
@@ -472,7 +466,7 @@ function sizesWidget(fig) {
     const vals = data.flatMap((d) => [d.cg[k], d.dg[k], d.hdg[k]]).concat([rt0[k]]);
     const P = new Plot(s1, { xlim: [-0.3, 6.3], ylim: [Math.min(...vals) / 2, Math.max(...vals) * 2], ylog: true, xlabel: 'polynomial degree p' });
     P.frame();
-    const ser = [['cg', 'CG (continuous P_p)', C[2]], ['dg', 'SIPG', C[0]], ['hdg', 'HDG (condensed traces)', C[1]]];
+    const ser = [['cg', 'CG = continuous Galerkin P_p', C[2]], ['dg', 'SIPG', C[0]], ['hdg', 'HDG (condensed traces)', C[1]]];
     for (const [key, , col] of ser) {
       P.line(data.map((d) => d.p), data.map((d) => d[key][k]), { color: col, width: 2.2 });
       P.points(data.map((d) => d.p), data.map((d) => d[key][k]), { color: col });

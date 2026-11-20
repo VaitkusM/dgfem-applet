@@ -2,6 +2,7 @@
  * @file Chapter 8 — DG for elliptic problems (interior penalty methods).
  *
  * Widgets:
+ *  - w-dubiner  : the ten Dubiner basis functions of degree ≤ 3 on the reference triangle
  *  - w-sipg     : IPDG solver (p, N, C_IP, variant, problem): u_h heat map with edge jumps, a cut line,
  *                 λ_min of the symmetric part of the matrix, errors
  *  - w-conv     : live convergence study of SIPG / NIPG / IIPG (L² and energy errors, rate table)
@@ -19,8 +20,11 @@ import { Plot } from '../../lib/viz/plot1d.js';
 import { triGrid } from '../../lib/core/mesh/structured.js';
 import { POISSON_MMS } from '../../lib/core/verify/mms.js';
 import { pairwiseRates } from '../../lib/core/verify/rates.js';
-import { solveIP, assembleIP, ipErrors, edgeJumps, smallestEigenvalue } from '../../lib/core/elliptic/sipg.js';
-import { brokenEvaluator, triGeometry } from '../../lib/core/elliptic/dgtri.js';
+import { solveIP, assembleIP, ipErrors, edgeJumps } from '../../lib/core/elliptic/sipg.js';
+import { smallestEigenvalueSym } from '../../lib/core/la/eigmin.js';
+import { brokenEvaluator, triGeometry, basisTables } from '../../lib/core/elliptic/dgtri.js';
+import { dubinerBasis, dubinerModes, dimP } from '../../lib/core/basis/simplex.js';
+import { PROBLEMS, exactRange } from './ellipticcommon.js';
 import { systemSizes } from '../../lib/core/elliptic/dofcount.js';
 import { csrAdd, csrTranspose, csrToDense, nnz } from '../../lib/core/la/sparse.js';
 import { symEig } from '../../lib/core/la/dense.js';
@@ -28,20 +32,8 @@ import { inertia } from '../../lib/core/la/inertia.js';
 import { gaussLegendre } from '../../lib/core/quad/gauss1d.js';
 import { legendreP } from '../../lib/core/basis/legendre.js';
 
-const PROBLEMS = [
-  { value: 'wave', label: 'u = cos(πx)·eʸ' },
-  { value: 'sinsin', label: 'u = sin(πx)·sin(πy)' },
-  { value: 'peak', label: 'Gaussian peak' },
-];
 const VARIANTS = [{ value: 'sipg', label: 'SIPG' }, { value: 'nipg', label: 'NIPG' }, { value: 'iipg', label: 'IIPG' }];
 const meshOf = (N) => triGrid(N, N, [0, 1, 0, 1], { diag: 'alt', jiggle: N > 1 ? 0.12 : 0 });
-
-/** Min/max of the exact solution on a grid (fixed colour range per problem). */
-function exactRange(u) {
-  let lo = Infinity, hi = -Infinity;
-  for (let i = 0; i <= 60; i++) for (let j = 0; j <= 60; j++) { const v = u(i / 60, j / 60); lo = Math.min(lo, v); hi = Math.max(hi, v); }
-  return [lo, hi];
-}
 
 /** Rasterise a broken Dubiner field of degree p (coefficients U[t*n+m]). */
 function drawBroken(surf, view, mesh, p, U, o) {
@@ -76,8 +68,58 @@ function cutPieces(mesh, p, U, y0) {
 }
 
 /* ------------------------------------------------------------------ */
+/* W0: the Dubiner basis on the reference triangle                      */
+/* ------------------------------------------------------------------ */
+function dubinerWidget(fig) {
+  const L = widgetLayout(fig);
+  const p1 = L.panel('the Dubiner functions $\\psi_{ij}$ of degree $i + j \\le 3$ (each scaled by its own maximum)', '2 1 420px');
+  const s1 = createCanvas(p1, { aspect: 0.8 });
+  const out = readout(L.controls);
+  const p = 3, n = dimP(p), modes = dubinerModes(p);
+  // one copy of the reference triangle per function: row d (from the top) holds the d + 1 functions of degree d
+  const nodes = new Float64Array(6 * n), tris = Int32Array.from({ length: 3 * n }, (_, i) => i), org = [];
+  let m = 0;
+  for (let d = 0; d <= p; d++) for (let k = 0; k <= d; k++, m++) {
+    const x0 = 0.15 + 1.25 * k + 0.625 * (p - d), y0 = 0.3 + 1.25 * (p - d);
+    nodes.set([x0, y0, x0 + 1, y0, x0, y0 + 1], 6 * m); org.push([x0, y0]);
+  }
+  // own maximum of every function (sampled on a lattice) and the orthonormality defect (quadrature of degree 2p)
+  const vmax = new Float64Array(n);
+  for (let i = 0; i <= 24; i++) for (let j = 0; i + j <= 24; j++) {
+    const v = dubinerBasis(p, i / 24, j / 24).v;
+    for (let q = 0; q < n; q++) vmax[q] = Math.max(vmax[q], Math.abs(v[q]));
+  }
+  const T = basisTables(p, 2 * p, 1), Q = T.vol.rule;
+  let defect = 0;
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) {
+    let s = 0; for (let q = 0; q < Q.n; q++) s += Q.w[q] * T.vol.V[q * n + a] * T.vol.V[q * n + b];
+    defect = Math.max(defect, Math.abs(s - (a === b ? 1 : 0)));
+  }
+  selfCheck('dubiner widget: orthonormal basis', defect < 1e-12);
+  selfCheck('dubiner widget: psi_0 = sqrt(2)', Math.abs(dubinerBasis(p, 0.3, 0.2).v[0] - Math.SQRT2) < 1e-14);
+  const B = { v: new Float64Array(n), dx: new Float64Array(n), dy: new Float64Array(n) };
+  function draw() {
+    const T2 = theme(), ctx = s1.ctx;
+    const view = new View2D(s1, [0, 5.3, 0, 5.3], { equal: true, pad: 6 });
+    ctx.fillStyle = T2.bg; ctx.fillRect(0, 0, s1.w, s1.h);
+    drawTriField(s1, view, nodes, tris, (t, l0, l1, l2) => dubinerBasis(p, l1, l2, B).v[t] / vmax[t], { cmap: 'rdbu', lo: -1, hi: 1 });
+    drawTriMesh(ctx, view, nodes, tris, { color: T2.ink, width: 1, alpha: 0.6 });
+    ctx.save(); ctx.fillStyle = T2.ink; ctx.font = `12px ${T2.ui}`; ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
+    modes.forEach(([i, j], q) => ctx.fillText(`ψ${i}${j}`, view.X(org[q][0] + 0.55), view.Y(org[q][1] + 0.62)));
+    ctx.restore();
+    out.set(`p = ${p}: n = (p+1)(p+2)/2 = ${n} functions\nψ_00 = √2 = ${fmt(Math.SQRT2, 5)} (constant)\n`
+      + `orthonormality defect\n  max |∫ψ_m ψ_m' − δ| = ${defect.toExponential(1)}\n`
+      + `row d (from the top): the d+1\nfunctions ψ_ij with i + j = d`);
+  }
+  s1.onResize(draw);
+  draw();
+}
+
+/* ------------------------------------------------------------------ */
 /* W1: the interior penalty solver                                      */
 /* ------------------------------------------------------------------ */
+/** λ_min is computed only up to this many unknowns (keeps the slider responsive). */
+const LMIN_MAX_DOFS = 1600;
 function sipgWidget(fig) {
   const L = widgetLayout(fig);
   const p1 = L.panel('DG solution $u_h$; edges coloured by the jump $|[\\![u_h]\\!]|$');
@@ -99,13 +141,16 @@ function sipgWidget(fig) {
     const sol = solveIP(mesh, { p: st.p, f: S.f, g: S.u, variant: st.variant, Cip: st.Cip });
     const err = ipErrors(sol, S.u, S.grad), J = edgeJumps(sol, S.u);
     const tSolve = performance.now() - t0;
-    let lmin = NaN;
-    if (sol.nDof <= 1500) {
+    // certified smallest eigenvalue of the symmetric part (eigenvalue counts, lib/core/la/eigmin.js)
+    let lmin = NaN, eig = null;
+    if (sol.nDof <= LMIN_MAX_DOFS) {
       const As = st.variant === 'sipg' ? sol.A : csrAdd(sol.A, csrTranspose(sol.A), 0.5, 0.5);
-      lmin = smallestEigenvalue(As, { k: 60 });
+      eig = smallestEigenvalueSym(As, { k: 60 });
+      lmin = eig.value;
     }
-    R = { S, mesh, sol, err, J, tSolve, lmin, range: exactRange(S.u) };
-    selfCheck('sipg widget: finite solution', sol.U.every(Number.isFinite));
+    R = { S, mesh, sol, err, J, tSolve, lmin, eig, range: exactRange(S.u) };
+    selfCheck('sipg widget: finite solution', sol.U.every(Number.isFinite) && Number.isFinite(err.L2));
+    if (eig) selfCheck('sipg widget: λ_min certified', eig.certified);
     if (st.variant === 'sipg' && st.Cip >= 1) selfCheck('sipg widget: SPD for C_IP >= 1', !(lmin <= 0));
     draw();
   }
@@ -150,13 +195,19 @@ function sipgWidget(fig) {
     P.line(xs, ys, { color: T.faint, dash: [5, 4], width: 1.5 });
     pieces.forEach(([px, py], i) => P.line(px, py, { color: i % 2 ? C[0] : C[2], width: 2 }));
     P.legend([{ label: 'exact u', color: T.faint, dash: [5, 4] }, { label: 'u_h, one colour per triangle', color: C[0] }], 'tr');
-    const lm = Number.isFinite(R.lmin)
-      ? `<b class="${R.lmin > 0 ? 'status-good' : 'status-bad'}">${fmt(R.lmin)}</b> (${R.lmin > 0 ? 'coercive' : 'NOT coercive'})`
-      : '— (reduce N or p)';
+    // value certified by eigenvalue counts; if the certificate ever failed, show the proven bounds instead
+    const lm = R.eig
+      ? (R.eig.certified
+        ? `<b class="${R.lmin > 0 ? 'status-good' : 'status-bad'}">${fmt(R.lmin)}</b> (${R.lmin > 0 ? 'coercive' : 'NOT coercive'})`
+        : `in [${fmt(R.eig.lower)}, ${fmt(R.eig.upper)}]`)
+      : `— (shown up to ${LMIN_MAX_DOFS} unknowns:\n  reduce N or p)`;
+    // honest warning where the discretisation gives no guarantee (intended: try C_IP below the threshold)
+    const warn = sol.singular ? '\n<b class="status-bad">matrix numerically singular</b>'
+      : (R.eig && R.lmin <= 0 ? '\n<b class="status-bad">not coercive: no error\nguarantee, u_h may be garbage</b>' : '');
     out.set(`unknowns  = ${sol.nDof}\nnon-zeros = ${nnz(sol.A)}\n`
       + `λ_min(½(A+Aᵀ)):\n  ${lm}\n`
       + `‖u − u_h‖_L2   = ${fmt(R.err.L2)}\nenergy error   = ${fmt(R.err.energy)}\n`
-      + `max edge jump  = ${fmt(jmax)}\nsolve: ${R.tSolve.toFixed(0)} ms`);
+      + `max edge jump  = ${fmt(jmax)}\nsolve: ${R.tSolve.toFixed(0)} ms${warn}`);
   }
   s1.onResize(draw); s2.onResize(draw);
   solve();
@@ -199,8 +250,12 @@ function convWidget(fig) {
       if (i < tasks.length) setTimeout(step, 0);
       else {
         const r = pairwiseRates(res.sipg.map((x) => x.h), res.sipg.map((x) => x.L2));
-        out.set(`done: ${tasks.length} solves\nlast SIPG L² rate = ${fmt(r[r.length - 1])} (expected ${st.p + 1})`);
-        selfCheck('conv widget: SIPG optimal L2 rate', Math.abs(r[r.length - 1] - (st.p + 1)) < 0.35);
+        // is the SIPG matrix coercive at this C_IP? (certified sign of λ_min on the N = 4 mesh; the threshold is mesh independent)
+        const lam = smallestEigenvalueSym(assembleIP(meshOf(4), { p: st.p, f: S.f, Cip: st.Cip }).A).value;
+        const note = lam > 0 ? '' : '\n<b class="status-bad">SIPG not coercive at this C_IP\n(λ_min < 0): its errors are\nerratic, rates meaningless</b>';
+        out.set(`done: ${tasks.length} solves\nlast SIPG L² rate = ${fmt(r[r.length - 1])} (expected ${st.p + 1})${note}`);
+        selfCheck('conv widget: finite errors', Object.values(res).every((a) => a.every((x) => Number.isFinite(x.L2) && Number.isFinite(x.En))));
+        if (st.Cip >= 1) selfCheck('conv widget: SIPG optimal L2 rate', Math.abs(r[r.length - 1] - (st.p + 1)) < 0.35);
       }
     };
     setTimeout(step, 0);
@@ -240,6 +295,11 @@ function convWidget(fig) {
   }
   s1.onResize(draw); s2.onResize(draw);
   draw();
+  // synchronous sanity check while mounting (the study itself runs asynchronously): coarsest mesh, all variants
+  selfCheck('conv widget: coarsest solves finite', ['sipg', 'nipg', 'iipg'].every((v) => {
+    const S = POISSON_MMS[st.prob], e = ipErrors(solveIP(meshOf(2), { p: st.p, f: S.f, g: S.u, variant: v, Cip: st.Cip }), S.u, S.grad);
+    return Number.isFinite(e.L2) && Number.isFinite(e.energy);
+  }));
   run();
 }
 
@@ -331,7 +391,7 @@ function coerciveWidget(fig) {
     out.set(`p = ${st.p}, ${mesh.tris.length / 3} triangles, ${cur.vec.length} unknowns\n`
       + `C* (this mesh) = ${fmt(sw.Cstar)}\n`
       + `at C_IP = ${fmt(st.Cip, 2)}:\n  λ_min = <b class="${spd ? 'status-good' : 'status-bad'}">${fmt(cur.lmin)}</b>, λ_max = ${fmt(cur.lmax)}\n`
-      + `  # negative eigenvalues = ${cur.nNeg}\n  ${spd ? `κ = λ_max/λ_min = ${fmt(cur.lmax / cur.lmin)}` : 'indefinite: CG not applicable'}`);
+      + `  # negative eigenvalues = ${cur.nNeg}\n  ${spd ? `κ = λ_max/λ_min = ${fmt(cur.lmax / cur.lmin)}` : 'indefinite: conjugate gradients\n  not applicable'}`);
   }
   let tjob = 0;
   function table() {
@@ -392,7 +452,7 @@ function dofsWidget(fig) {
     P.points(data.map((d) => d.p), data.map((d) => d.cg[k]), { color: C[2] });
     P.line(data.map((d) => d.p), data.map((d) => d.dg[k]), { color: C[0], width: 2.2 });
     P.points(data.map((d) => d.p), data.map((d) => d.dg[k]), { color: C[0] });
-    P.legend([{ label: 'CG (continuous P_p)', color: C[2] }, { label: 'DG (SIPG)', color: C[0] }], 'br');
+    P.legend([{ label: 'CG = continuous Galerkin P_p', color: C[2] }, { label: 'DG (SIPG)', color: C[0] }], 'br');
     let html = '<table class="data"><tr><th>p</th><th>CG unknowns</th><th>DG unknowns</th><th>ratio</th><th>CG non-zeros</th><th>DG non-zeros</th><th>ratio</th></tr>';
     for (const d of data) html += `<tr><td>${d.p}</td><td>${d.cg.n}</td><td>${d.dg.n}</td><td>${(d.dg.n / d.cg.n).toFixed(2)}</td><td>${d.cg.nnz}</td><td>${d.dg.nnz}</td><td>${(d.dg.nnz / d.cg.nnz).toFixed(2)}</td></tr>`;
     tbl.innerHTML = `${html}</table>`;
@@ -403,6 +463,7 @@ function dofsWidget(fig) {
 }
 
 initChapter(() => {
+  mount('w-dubiner', dubinerWidget);
   mount('w-sipg', sipgWidget);
   mount('w-conv', convWidget);
   mount('w-coercive', coerciveWidget);

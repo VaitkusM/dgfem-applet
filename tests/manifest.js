@@ -29,6 +29,7 @@ export const TEST_FILES = [
   'unit/dgref.test.js',
   'unit/dgspectrum.test.js',
   'unit/dgtri.test.js',
+  'unit/eigmin.test.js',
   'unit/frcorrections.test.js',
   'unit/gpu-cputwin.test.js',
   'unit/gpu-model.test.js',
